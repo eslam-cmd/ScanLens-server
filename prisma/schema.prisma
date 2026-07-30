@@ -1,0 +1,215 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================================================
+// ✅ المستخدمين
+// ============================================================
+
+// prisma/schema.prisma
+
+model User {
+  id                    String    @id @default(uuid())
+  email                 String    @unique
+  passwordHash          String
+  name                  String?
+  isVerified            Boolean   @default(false)
+  verificationCode      String?
+  verificationExpires   DateTime?
+  resetPasswordToken    String?
+  resetPasswordExpires  DateTime?
+  plan                  String    @default("free")
+  subscriptionExpiresAt DateTime? 
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  role                  String    @default("user")
+  websites              Website[]
+  payments              Payment[]
+  usageLogs             UsageLog[]
+
+  @@map("users")
+}
+
+// ============================================================
+// ✅ المدفوعات
+// ============================================================
+
+model Payment {
+  id                    String    @id @default(uuid())
+  userId                String
+  amount                Float
+  currency              String    @default("USD")
+  status                String    @default("PENDING")
+  stripePaymentIntentId String?
+  stripeChargeId        String?
+  paymentMethod         String?
+  description           String?
+  metadata              Json?
+  paidAt                DateTime?
+  refundedAt            DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("payments")
+}
+
+// ============================================================
+// ✅ سجل الاستخدام
+// ============================================================
+
+model UsageLog {
+  id                    String    @id @default(uuid())
+  userId                String
+  action                String
+  details               Json?
+  metadata              Json?
+  ipAddress             String?
+  userAgent             String?
+  createdAt             DateTime  @default(now())
+
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("usage_logs")
+}
+
+// ============================================================
+// ✅ الجداول الأساسية
+// ============================================================
+
+model Website {
+  id        String   @id @default(uuid())
+  url       String
+  userId    String
+  createdAt DateTime @default(now())
+  domain    String?
+  scans     Scan[]
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  websiteId String?
+  website   Website?  @relation("SubWebsites", fields: [websiteId], references: [id])
+  websites  Website[] @relation("SubWebsites")
+}
+
+model Scan {
+  id              String          @id @default(uuid())
+  score           Int
+  status          ScanStatus      @default(COMPLETED)
+  websiteId       String
+  website         Website         @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  domain          String?
+  vulnerabilities Vulnerability[]
+  findings        Finding[]
+  startedAt       DateTime        @default(now())
+  completedAt     DateTime?
+  createdAt       DateTime        @default(now())
+}
+
+model Vulnerability {
+  id          String   @id @default(uuid())
+  scanId      String
+  title       String
+  severity    String
+  description String
+  remediation String?  @db.Text
+  createdAt   DateTime @default(now())
+
+  scan Scan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+}
+
+model SecurityRule {
+  id          String       @id @default(uuid())
+  code        String       @unique
+  name        String
+  category    RuleCategory
+  severity    Severity
+  description String
+  scoreImpact Int
+  createdAt   DateTime     @default(now())
+  findings    Finding[]
+
+  @@map("security_rules")
+}
+
+model Finding {
+  id          String       @id @default(uuid())
+  scanId      String
+  ruleId      String
+  title       String
+  severity    Severity
+  description String
+  evidence    Json?
+  createdAt   DateTime     @default(now())
+  aiAnalysis  AIAnalysis?
+  rule        SecurityRule @relation(fields: [ruleId], references: [id])
+  scan        Scan         @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@map("findings")
+}
+
+model AIAnalysis {
+  id          String   @id @default(uuid())
+  findingId   String   @unique
+  explanation String
+  remediation String
+  model       String
+  createdAt   DateTime @default(now())
+  finding     Finding  @relation(fields: [findingId], references: [id], onDelete: Cascade)
+
+  @@map("ai_analyses")
+}
+
+
+// في prisma/schema.prisma أضف هذا الجدول
+
+model License {
+  id          String    @id @default(uuid())
+  key         String    @unique
+  plan        String    // free, pro, extra
+  email       String?
+  usedBy      String?
+  usedAt      DateTime?
+  expiresAt   DateTime?
+  usesCount   Int       @default(0)
+  isActive    Boolean   @default(true)
+  notes       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@map("licenses")
+}
+// ============================================================
+// ✅ Enums
+// ============================================================
+
+enum Severity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+  INFO
+}
+
+enum RuleCategory {
+  HTTPS
+  SECURITY_HEADERS
+  COOKIES
+  TLS
+  REDIRECTS
+}
+
+enum ScanStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
