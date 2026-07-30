@@ -17,17 +17,19 @@ import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
-import { AdminGuard } from '../auth/guards/admin.guard';      
+import { AdminGuard } from '../auth/guards/admin.guard';
 @Controller('auth')
 export class AuthController {
   constructor(private authService: AuthService) {}
 
   private getCookieOptions() {
+    const isProduction = process.env.NODE_ENV === 'production';
+
     return {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+      secure: isProduction,
+      sameSite: isProduction ? 'none' : 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000, 
       path: '/',
     } as const;
   }

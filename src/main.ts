@@ -126,9 +126,7 @@ async function bootstrap() {
   const allowedOrigins = [
     clientUrl,
     'http://localhost:3000',
-    'http://localhost:3001',
-    'https://scanlens.app',
-    'https://www.scanlens.app',
+    'https://scan-lens-client.vercel.app',
   ];
 
   app.enableCors({
@@ -146,13 +144,13 @@ async function bootstrap() {
     },
     credentials: true,
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    exposedHeaders: ['Content-Range', 'X-Content-Range'],
     allowedHeaders: [
       'Content-Type',
       'Accept',
       'Authorization',
       'X-Requested-With',
     ],
-    exposedHeaders: ['Content-Range', 'X-Content-Range'],
     maxAge: 86400,
   });
 
