@@ -1,15 +1,22 @@
-// server/src/mail/mail.service.ts
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Resend } from 'resend';
+import * as nodemailer from 'nodemailer';
 
 @Injectable()
 export class MailService {
-  private resend: Resend;
+  private transporter: nodemailer.Transporter;
   private readonly logger = new Logger(MailService.name);
 
   constructor(private configService: ConfigService) {
-    this.resend = new Resend(this.configService.get('RESEND_API_KEY'));
+    this.transporter = nodemailer.createTransport({
+      host: this.configService.get('SMTP_HOST') || 'smtp.gmail.com',
+      port: Number(this.configService.get('SMTP_PORT')) || 587,
+      secure: false, // true لـ port 465، و false للـ 587
+      auth: {
+        user: this.configService.get('SMTP_USER'),
+        pass: this.configService.get('SMTP_PASS'),
+      },
+    });
   }
 
   /**
@@ -21,38 +28,26 @@ export class MailService {
     html: string;
   }): Promise<boolean> {
     try {
-      // ✅ في التطوير، اطبع الـ OTP في الكونسول ولا ترسل إيميل
-      if (process.env.NODE_ENV === 'development') {
-        // استخراج الـ OTP من الـ HTML
-        const otpMatch = options.html.match(/\b\d{6}\b/);
-        const otp = otpMatch ? otpMatch[0] : 'No OTP found';
+      // ✅ إرسال البريد الإلكتروني الفعلي عبر SMTP
+      const mailFrom =
+        this.configService.get('MAIL_FROM') ||
+        '"ScanLens" <noreply@scanlens.app>';
 
-        console.log('\n=========================================');
-        console.log(`📧 [DEV] To: ${options.to}`);
-        console.log(`🔑 [DEV] OTP Code: ${otp}`);
-        console.log(`📝 [DEV] Subject: ${options.subject}`);
-        console.log('=========================================\n');
-
-        // ✅ في التطوير، ارجع true عشان التطبيق يكمل
-        return true;
-      }
-
-      // ✅ في الإنتاج، أرسل إيميل حقيقي لأي إيميل
-      await this.resend.emails.send({
-        from:
-          this.configService.get('MAIL_FROM') ||
-          'ScanLens <noreply@scanlens.app>',
+      const info = await this.transporter.sendMail({
+        from: mailFrom,
         to: options.to,
         subject: options.subject,
         html: options.html,
       });
 
-      this.logger.log(`[Mail] Sent to: ${options.to}`);
+      this.logger.log(
+        `[Mail] Sent successfully to: ${options.to} (ID: ${info.messageId})`,
+      );
       return true;
     } catch (error) {
       this.logger.error(`[Mail Error] Failed to send to ${options.to}`, error);
 
-      // ✅ حتى لو فشل الإيميل، اطبع الـ OTP في الكونسول عشان التطوير
+      // ✅ احتياطي: طباعة الـ OTP في الـ Console عند حدوث خطأ أثناء التطوير
       const otpMatch = options.html.match(/\b\d{6}\b/);
       if (otpMatch) {
         console.log(
@@ -71,7 +66,6 @@ export class MailService {
     // ✅ اطبع OTP في الـ Console (احتياطي)
     console.log(`\n📧 [OTP] ${recipientEmail}: ${otp}\n`);
 
-    // ✅ نفس الكود القديم، ما غيرت شيء
     return this.sendMail({
       to: recipientEmail,
       subject: '🔒 ScanLens - Verification Code',
