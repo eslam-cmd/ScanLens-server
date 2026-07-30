@@ -1,5 +1,6 @@
 // server/src/scans/scans.module.ts
 import { forwardRef, Module } from '@nestjs/common';
+import { BullModule } from '@nestjs/bullmq'; // ✅ أضف هذا
 import { ScansService } from './scans.service';
 import { ScansController } from './scans.controller';
 import { PrismaModule } from '../../prisma/prisma.module';
@@ -13,11 +14,14 @@ import { HttpsEngine } from '../scanner/engines/https.engine';
 
 @Module({
   imports: [
-    PrismaModule, // ✅ index 0
-    AuthModule, // ✅ index 1
-    QueueModule, // ✅ index 2 - تأكد من وجود هذا الموديول
+    PrismaModule,
+    AuthModule,
     forwardRef(() => QueueModule),
-    SubscriptionModule, // ✅ index 3
+    SubscriptionModule,
+    BullModule.registerQueue({
+      // ✅ أضف هذا
+      name: 'scan-queue',
+    }),
   ],
   controllers: [ScansController],
   providers: [

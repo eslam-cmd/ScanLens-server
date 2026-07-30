@@ -7,17 +7,12 @@ import { ScansModule } from '../scans/scans.module';
 
 @Module({
   imports: [
-    BullModule.forRoot({
-      connection: {
-        url: process.env.REDIS_URL || 'redis://localhost:6379',
-      },
-    }),
     BullModule.registerQueue({
       name: 'scan-queue',
     }),
     forwardRef(() => ScansModule),
   ],
   providers: [ScanProcessor, QueueService],
-  exports: [BullModule, QueueService],
+  exports: [QueueService],
 })
 export class QueueModule {}

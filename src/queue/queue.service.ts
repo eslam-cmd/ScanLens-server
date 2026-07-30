@@ -1,5 +1,5 @@
 // server/src/queue/queue.service.ts
-import { Injectable } from '@nestjs/common';
+import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 
@@ -31,12 +31,6 @@ export class QueueService {
       id: job.id,
       state,
       hasResult: !!result,
-      resultSummary: result
-        ? {
-            score: result.score,
-            vulnCount: result.vulnerabilities?.length || 0,
-          }
-        : null,
     });
 
     return {
