@@ -19,7 +19,7 @@ import { EnginesModule } from './scanner/Engines.Module';
       isGlobal: true,
     }),
     ScheduleModule.forRoot(),
-    // ✅ BullModule.forRoot مع REDIS_URL من .env
+  
     BullModule.forRoot({
       connection: {
         url: process.env.REDIS_URL || 'redis://localhost:6379',

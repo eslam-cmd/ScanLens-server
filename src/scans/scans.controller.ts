@@ -12,7 +12,8 @@ import {
   NotFoundException,
   Query,
 } from '@nestjs/common';
-import { Response } from 'express';
+// ✅ استخدم import type بدلاً من import عادي
+import type { Response } from 'express';
 import { ScansService } from './scans.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { JwtService } from '@nestjs/jwt';
@@ -52,22 +53,18 @@ export class ScansController {
       }
     }
 
-    // ✅ إضافة الفحص إلى الـ Queue
     const job = await this.queueService.addScanJob({
       url: body.url,
       userId,
       isDeepScan: body.deepScan || false,
     });
 
-    // ✅ التحقق من وجود job.id قبل الانتظار
     if (!job.id) {
       throw new Error('Failed to create job');
     }
 
-    // ✅ انتظار النتيجة
     const result = await this.waitForJobCompletion(job.id);
 
-    // ✅ طباعة النتيجة للتأكد
     console.log('📤 Quick scan result:', {
       id: result?.id,
       score: result?.score,
@@ -100,7 +97,6 @@ export class ScansController {
         throw new Error('Job failed');
       }
 
-      // انتظار 500ms قبل المحاولة مرة أخرى
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
 
@@ -146,7 +142,6 @@ export class ScansController {
       throw new NotFoundException('Scan record not found');
     }
 
-    // ✅ استخراج البيانات من scan
     const scanData = scan as any;
     const websiteUrl = scanData.website?.url || 'N/A';
     const headersData = scanData.headersResult || {
@@ -164,7 +159,6 @@ export class ScansController {
       ['Category', 'Key / Header', 'Status / Value'],
     ];
 
-    // إضافة الهيدرز المفحوصة
     if (headersData?.presentHeaders) {
       headersData.presentHeaders.forEach((h: string) =>
         csvRows.push(['Security Header', h, 'PRESENT']),
@@ -176,7 +170,6 @@ export class ScansController {
       );
     }
 
-    // إضافة تفاصيل SSL
     if (sslData) {
       csvRows.push(['SSL Certificate', 'Valid', sslData.valid ? 'YES' : 'NO']);
       csvRows.push(['SSL Certificate', 'Issuer', sslData.issuer || 'N/A']);
