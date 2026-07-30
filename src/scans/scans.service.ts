@@ -11,7 +11,7 @@ import { GoogleGenAI } from '@google/genai';
 import axios from 'axios';
 import * as tls from 'tls';
 import { URL } from 'url';
-import * as PDFDocument from 'pdfkit';
+import PDFDocument from 'pdfkit';
 import { PLANS, PlanId } from '../plans/plans.config';
 import { HeadersEngine } from '../scanner/engines/headers.engine';
 import { CookiesEngine } from '../scanner/engines/cookies.engine';
