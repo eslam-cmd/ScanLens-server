@@ -29,6 +29,7 @@ import { AdminGuard } from './guards/admin.guard';
   providers: [
     AuthService,
     JwtStrategy,
+    PrismaModule,
     JwtAuthGuard, // ✅ أضف JwtAuthGuard في providers
     AdminGuard, // ✅ أضف AdminGuard في providers
   ],

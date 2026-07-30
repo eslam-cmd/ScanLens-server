@@ -10,9 +10,7 @@ import {
   Param,
   Delete,
   NotFoundException,
-  Query,
 } from '@nestjs/common';
-// ✅ استخدم import type بدلاً من import عادي
 import type { Response } from 'express';
 import { ScansService } from './scans.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -27,12 +25,13 @@ export class ScansController {
   constructor(
     private readonly scansService: ScansService,
     private readonly jwtService: JwtService,
+
     @InjectQueue('scan-queue') private scanQueue: Queue,
     private readonly queueService: QueueService,
-    private readonly prisma: PrismaService,
+    private prisma: PrismaService,
   ) {}
 
-  // ✅ 1. فحص سريع مع Queue
+  // ✅ 1. فحص سريع (مباشر بدون Queue)
   @Post('quick')
   async quickScan(
     @Body() body: { url: string; deepScan?: boolean },
@@ -49,21 +48,15 @@ export class ScansController {
         const payload = this.jwtService.verify(token);
         userId = payload.sub;
       } catch {
-        // توكن غير صالح - فحص كزائر
+        // توكن غير صالح
       }
     }
 
-    const job = await this.queueService.addScanJob({
-      url: body.url,
+    const result = await this.scansService.scanUrl(
+      body.url,
       userId,
-      isDeepScan: body.deepScan || false,
-    });
-
-    if (!job.id) {
-      throw new Error('Failed to create job');
-    }
-
-    const result = await this.waitForJobCompletion(job.id);
+      body.deepScan || false,
+    );
 
     console.log('📤 Quick scan result:', {
       id: result?.id,
@@ -72,35 +65,6 @@ export class ScansController {
     });
 
     return result;
-  }
-
-  // ✅ دالة مساعدة لانتظار نتيجة الـ Job
-  private async waitForJobCompletion(
-    jobId: string,
-    timeout: number = 60000,
-  ): Promise<any> {
-    const startTime = Date.now();
-
-    while (Date.now() - startTime < timeout) {
-      const job = await this.scanQueue.getJob(jobId);
-      if (!job) {
-        throw new NotFoundException('Job not found');
-      }
-
-      const state = await job.getState();
-
-      if (state === 'completed') {
-        return job.returnvalue;
-      }
-
-      if (state === 'failed') {
-        throw new Error('Job failed');
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-
-    throw new Error('Job timeout');
   }
 
   // ✅ 2. توليد AI Fix
@@ -269,7 +233,7 @@ export class ScansController {
     return { message: 'Job cancelled successfully' };
   }
 
-  // ✅ 10. فحص مباشر (بدون Queue - للتطوير)
+  // ✅ 10. فحص مباشر (بدون Queue)
   @Post('direct-scan')
   @UseGuards(JwtAuthGuard)
   async directScan(

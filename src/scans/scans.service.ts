@@ -144,8 +144,6 @@ export class ScansService {
 
   // ✅ 3. الفحص الرئيسي المحسن
   async scanUrl(url: string, userId?: string, isDeepScan: boolean = false) {
-   
-
     // ✅ التحقق من الصلاحية
     const capability = await this.checkUserCapability(userId, isDeepScan);
     if (!capability.allowed) {
@@ -380,7 +378,10 @@ export class ScansService {
             },
           });
         } catch (dbError) {
-          console.warn('⚠️ Database error, continuing without saving:', dbError.message);
+          console.warn(
+            '⚠️ Database error, continuing without saving:',
+            dbError.message,
+          );
         }
       } else {
         console.log('👤 Guest scan - no user ID, skipping database save');
@@ -936,6 +937,13 @@ Format your output in Markdown with:
 
     return this.prisma.website.delete({
       where: { id: websiteId },
+    });
+  }
+  async getUserActivities(userId: string) {
+    return this.prisma.usageLog.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
     });
   }
 }
