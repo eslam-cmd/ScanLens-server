@@ -1,4 +1,5 @@
 // server/src/scheduler/scheduler.service.ts
+
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SubscriptionService } from '../subscription/subscription.service';
@@ -33,19 +34,14 @@ export class SchedulerService {
     }
   }
 
-  // ✅ كل يوم الساعة 00:00 - المهام اليومية (الاشتراكات)
-  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  // ✅ كل يوم الساعة 00:30 - المهام اليومية (الاشتراكات المنتهية)
+  @Cron('30 0 * * *')
   async handleDailySubscriptionTasks() {
     this.logger.log('🔄 Starting daily subscription tasks...');
 
     try {
-      const renewed = await this.subscriptionService.autoRenewSubscriptions();
-      this.logger.log(`✅ ${renewed.renewed.length} subscriptions renewed`);
-      if (renewed.failed.length > 0) {
-        this.logger.log(`❌ ${renewed.failed.length} renewals failed`);
-      }
-
-      const expired = await this.subscriptionService.expireSubscriptions();
+      const expired =
+        await this.subscriptionService.processExpiredSubscriptions();
       this.logger.log(
         `⚠️ ${expired.length} subscriptions expired and downgraded to Free`,
       );
@@ -56,10 +52,24 @@ export class SchedulerService {
     }
   }
 
+  // ✅ كل يوم الساعة 09:00 - إرسال تذكيرات انتهاء الاشتراك
+  @Cron('0 9 * * *')
+  async handleExpirationReminders() {
+    this.logger.log('📧 Sending expiration reminders...');
+    try {
+      const result = await this.subscriptionService.sendExpirationReminders();
+      this.logger.log(`✅ ${result.sent} expiration reminders sent`);
+    } catch (error) {
+      this.logger.error(
+        `❌ Failed to send expiration reminders: ${error.message}`,
+      );
+    }
+  }
+
   // ✅ كل ساعة
   @Cron(CronExpression.EVERY_HOUR)
   async handleHourlyTasks() {
-    this.logger.log('🔄 Running hourly tasks...');
+    this.logger.debug('🔄 Running hourly tasks...');
 
     try {
       const expiredResult = await this.subscriptionService.autoExpireLicenses();
@@ -68,7 +78,6 @@ export class SchedulerService {
           `✅ ${expiredResult.count} expired licenses deactivated (hourly check)`,
         );
       }
-      this.logger.log('✅ Hourly tasks completed');
     } catch (error) {
       this.logger.error('❌ Error running hourly tasks:', error);
     }

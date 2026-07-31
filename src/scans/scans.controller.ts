@@ -1,4 +1,5 @@
 // server/src/scans/scans.controller.ts
+
 import {
   Controller,
   Post,
@@ -10,55 +11,45 @@ import {
   Param,
   Delete,
   NotFoundException,
+  ForbiddenException,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { ScansService } from './scans.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { JwtService } from '@nestjs/jwt';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
-import { QueueService } from '../queue/queue.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { ExportService } from './export.service';
 
 @Controller('scans')
 export class ScansController {
   constructor(
     private readonly scansService: ScansService,
     private readonly jwtService: JwtService,
-
-    @InjectQueue('scan-queue') private scanQueue: Queue,
-    private readonly queueService: QueueService,
+    private readonly exportService: ExportService,
     private prisma: PrismaService,
   ) {}
 
-  // ✅ 1. فحص سريع (مباشر بدون Queue)
-  @Post('quick')
-  async quickScan(
+  // ✅ 1. فحص مباشر (بدون Queue)
+  @Post('direct-scan')
+  @UseGuards(JwtAuthGuard) // ✅ يتطلب تسجيل دخول
+  async directScan(
     @Body() body: { url: string; deepScan?: boolean },
     @Req() req: any,
   ) {
-    let userId: string | undefined = undefined;
+    const userId = req.user?.id;
 
-    const token =
-      req.cookies?.access_token ||
-      req.headers.authorization?.replace('Bearer ', '');
-
-    if (token) {
-      try {
-        const payload = this.jwtService.verify(token);
-        userId = payload.sub;
-      } catch {
-        // توكن غير صالح
-      }
+    if (!userId) {
+      throw new ForbiddenException('User not authenticated');
     }
 
+    // ✅ تنفيذ الفحص مباشرة
     const result = await this.scansService.scanUrl(
       body.url,
       userId,
       body.deepScan || false,
     );
 
-    console.log('📤 Quick scan result:', {
+    console.log('📤 Direct scan result:', {
       id: result?.id,
       score: result?.score,
       vulnerabilities: result?.vulnerabilities?.length || 0,
@@ -67,7 +58,26 @@ export class ScansController {
     return result;
   }
 
-  // ✅ 2. توليد AI Fix
+  // ✅ 2. فحص للضيوف (بدون JWT)
+  @Post('guest-scan')
+  async guestScan(@Body() body: { url: string; deepScan?: boolean }) {
+    // ✅ فحص بدون userId (ضيف)
+    const result = await this.scansService.scanUrl(
+      body.url,
+      undefined, // no userId
+      body.deepScan || false,
+    );
+
+    console.log('📤 Guest scan result:', {
+      id: result?.id,
+      score: result?.score,
+      vulnerabilities: result?.vulnerabilities?.length || 0,
+    });
+
+    return result;
+  }
+
+  // ✅ 3. توليد AI Fix
   @Post('ai-fix')
   @UseGuards(JwtAuthGuard)
   async getAiFix(
@@ -83,171 +93,79 @@ export class ScansController {
     return { remediation };
   }
 
-  // ✅ 3. جلب تاريخ الفحوصات
+  // ✅ 4. جلب تاريخ الفحوصات
   @Get('history')
   @UseGuards(JwtAuthGuard)
   async getHistory(@Req() req: any) {
     return this.scansService.getUserHistory(req.user.id);
   }
 
-  // ✅ 4. حذف فحص
+  // ✅ 5. حذف فحص
   @Delete(':id')
   @UseGuards(JwtAuthGuard)
   async deleteScan(@Param('id') id: string, @Req() req: any) {
     return this.scansService.deleteScan(id, req.user.id);
   }
 
-  // ✅ 5. تصدير CSV لفحص واحد
+  // ✅ 6. تصدير CSV لفحص واحد
   @Get(':id/export/csv')
   @UseGuards(JwtAuthGuard)
   async exportCsv(@Param('id') id: string, @Res() res: Response) {
+    const csvContent = await this.exportService.generateSingleScanCsv(id);
+
     const scan = await this.scansService.getScanById(id);
-    if (!scan) {
-      throw new NotFoundException('Scan record not found');
-    }
-
-    const scanData = scan as any;
-    const websiteUrl = scanData.website?.url || 'N/A';
-    const headersData = scanData.headersResult || {
-      presentHeaders: [],
-      missingHeaders: [],
-    };
-    const sslData = scanData.sslResult || null;
-
-    const csvRows = [
-      ['Scan Audit Report', 'ScanLens Platform'],
-      ['Domain / URL', websiteUrl],
-      ['Security Score', `${scan.score}/100`],
-      ['Date', new Date(scan.createdAt).toISOString()],
-      [],
-      ['Category', 'Key / Header', 'Status / Value'],
-    ];
-
-    if (headersData?.presentHeaders) {
-      headersData.presentHeaders.forEach((h: string) =>
-        csvRows.push(['Security Header', h, 'PRESENT']),
-      );
-    }
-    if (headersData?.missingHeaders) {
-      headersData.missingHeaders.forEach((h: string) =>
-        csvRows.push(['Security Header', h, 'MISSING']),
-      );
-    }
-
-    if (sslData) {
-      csvRows.push(['SSL Certificate', 'Valid', sslData.valid ? 'YES' : 'NO']);
-      csvRows.push(['SSL Certificate', 'Issuer', sslData.issuer || 'N/A']);
-      csvRows.push([
-        'SSL Certificate',
-        'Days Remaining',
-        sslData.daysRemaining ?? 'N/A',
-      ]);
-    }
-
-    const csvContent = csvRows
-      .map((row) =>
-        row.map((field) => `"${String(field).replace(/"/g, '""')}"`).join(','),
-      )
-      .join('\n');
+    const domain = (scan as any).website?.domain || 'scan';
+    const timestamp = new Date()
+      .toISOString()
+      .replace(/[:.]/g, '-')
+      .slice(0, 19);
+    const filename = `ScanLens_Report_${domain}_${timestamp}.csv`;
 
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename=scan-report-${scan.id.slice(0, 8)}.csv`,
-    );
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     return res.status(200).send(csvContent);
   }
 
-  // ✅ 6. تصدير PDF لفحص واحد
+  // ✅ 7. تصدير PDF لفحص واحد
   @Get(':id/export/pdf')
   @UseGuards(JwtAuthGuard)
   async exportPdf(@Param('id') id: string, @Res() res: Response) {
-    const pdfBuffer = await this.scansService.generatePdfReport(id);
+    const pdfBuffer = await this.exportService.generatePdfReport(id);
+
+    const scan = await this.scansService.getScanById(id);
+    const domain = (scan as any).website?.domain || 'scan';
+    const timestamp = new Date()
+      .toISOString()
+      .replace(/[:.]/g, '-')
+      .slice(0, 19);
+    const filename = `ScanLens_Report_${domain}_${timestamp}.pdf`;
 
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename=scan-report-${id.slice(0, 8)}.pdf`,
-    );
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     return res.status(200).send(pdfBuffer);
   }
 
-  // ✅ 7. تصدير CSV لكل الفحوصات
+  // ✅ 8. تصدير CSV لكل الفحوصات
   @Get('export/csv')
   @UseGuards(JwtAuthGuard)
   async exportAllHistoryCsv(@Req() req: any, @Res() res: Response) {
-    const scans = await this.scansService.getUserHistory(req.user.id);
-    if (!scans || scans.length === 0) {
-      throw new NotFoundException('No scan history available for export');
-    }
+    const csvContent = await this.exportService.generateCsvExport(req.user.id);
 
-    const csvRows = [
-      ['Scan ID', 'Target Domain', 'URL', 'Score', 'Status', 'Date'],
-    ];
-
-    scans.forEach((scan: any) => {
-      csvRows.push([
-        scan.id,
-        scan.website?.domain || 'N/A',
-        scan.website?.url || 'N/A',
-        `${scan.score}/100`,
-        scan.status,
-        new Date(scan.createdAt).toISOString(),
-      ]);
-    });
-
-    const csvContent = csvRows
-      .map((row) =>
-        row.map((field) => `"${String(field).replace(/"/g, '""')}"`).join(','),
-      )
-      .join('\n');
+    const timestamp = new Date()
+      .toISOString()
+      .replace(/[:.]/g, '-')
+      .slice(0, 19);
+    const filename = `ScanLens_History_${timestamp}.csv`;
 
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename=ScanLens_History_${Date.now()}.csv`,
-    );
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     return res.status(200).send(csvContent);
   }
 
-  // ✅ 8. جلب حالة مهمة في الـ Queue
-  @Get('queue/status/:jobId')
-  @UseGuards(JwtAuthGuard)
-  async getJobStatus(@Param('jobId') jobId: string) {
-    const status = await this.queueService.getJobStatus(jobId);
-    if (!status) {
-      throw new NotFoundException('Job not found');
-    }
-    return status;
-  }
-
-  // ✅ 9. إلغاء مهمة في الـ Queue
-  @Delete('queue/:jobId')
-  @UseGuards(JwtAuthGuard)
-  async cancelJob(@Param('jobId') jobId: string) {
-    const job = await this.scanQueue.getJob(jobId);
-    if (!job) {
-      throw new NotFoundException('Job not found');
-    }
-    await job.remove();
-    return { message: 'Job cancelled successfully' };
-  }
-
-  // ✅ 10. فحص مباشر (بدون Queue)
-  @Post('direct-scan')
-  @UseGuards(JwtAuthGuard)
-  async directScan(
-    @Body() body: { url: string; deepScan?: boolean },
-    @Req() req: any,
-  ) {
-    return this.scansService.scanUrl(
-      body.url,
-      req.user.id,
-      body.deepScan || false,
-    );
-  }
-
-  // ✅ 11. الحصول على خطة المستخدم الحالية
+  // ✅ 9. الحصول على خطة المستخدم الحالية
   @Get('my-plan')
   @UseGuards(JwtAuthGuard)
   async getMyPlan(@Req() req: any) {
@@ -259,5 +177,48 @@ export class ScansController {
       plan: user?.plan || 'free',
       role: user?.role || 'user',
     };
+  }
+
+  // ✅ 10. تنظيف الفحوصات المنتهية (للمدير فقط)
+  @Delete('clean-expired')
+  @UseGuards(JwtAuthGuard)
+  async cleanExpiredScans(@Req() req: any) {
+    if (req.user.role !== 'admin') {
+      throw new ForbiddenException('Only admins can perform this action');
+    }
+    const result = await this.scansService.cleanExpiredScans();
+    return result;
+  }
+
+  // ✅ 11. تنظيف فحوصات المستخدم المنتهية
+  @Delete('user/clean-expired')
+  @UseGuards(JwtAuthGuard)
+  async cleanUserExpiredScans(@Req() req: any) {
+    const result = await this.scansService.cleanUserExpiredScans(req.user.id);
+    return result;
+  }
+
+  // ✅ 12. الحصول على إحصائيات التخزين
+  @Get('storage-stats')
+  @UseGuards(JwtAuthGuard)
+  async getStorageStats(@Req() req: any) {
+    const stats = await this.scansService.getUserStorageStats(req.user.id);
+    return stats;
+  }
+
+  // ✅ 13. الحصول على إحصائيات اليومية
+  @Get('daily-stats')
+  @UseGuards(JwtAuthGuard)
+  async getDailyStats(@Req() req: any) {
+    const stats = await this.scansService.getDailyStats(req.user.id);
+    return stats;
+  }
+
+  // ✅ 14. الحصول على آخر فحص
+  @Get('latest')
+  @UseGuards(JwtAuthGuard)
+  async getLatestScan(@Req() req: any) {
+    const scan = await this.scansService.getLatestScan(req.user.id);
+    return scan;
   }
 }

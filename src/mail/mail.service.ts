@@ -355,4 +355,117 @@ export class MailService {
       `,
     });
   }
+
+  // server/src/mail/mail.service.ts
+
+  // ✅ أضف هذه الدوال في نهاية الكلاس
+
+  /**
+   * ✅ إشعار انتهاء الاشتراك (تنبيه)
+   */
+  async sendSubscriptionExpiringWarning(
+    recipientEmail: string,
+    recipientName: string,
+    plan: string,
+    expiresAt: Date,
+    daysRemaining: number,
+  ): Promise<boolean> {
+    const expiryDate = new Date(expiresAt).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+
+    return this.sendMail({
+      to: recipientEmail,
+      subject: `⚠️ ScanLens - Your ${plan} plan expires in ${daysRemaining} days`,
+      html: `
+      <div style="font-family: Arial, sans-serif; max-width: 500px; margin: auto; padding: 20px; border: 1px solid #e4e4e7; border-radius: 10px;">
+        <h2 style="color: #09090b; text-align: center;">⚠️ Subscription Expiring Soon</h2>
+        <p style="color: #52525b; font-size: 16px;">Hello ${recipientName},</p>
+        <p style="color: #52525b; font-size: 16px;">Your <strong>${plan}</strong> plan will expire in <strong style="color: #f59e0b;">${daysRemaining} days</strong>.</p>
+        <div style="background-color: #fffbeb; padding: 15px; border-radius: 8px; border-left: 4px solid #f59e0b; margin: 20px 0;">
+          <p style="color: #78350f; font-size: 14px; margin: 0;">
+            <strong>Plan:</strong> ${plan}
+          </p>
+          <p style="color: #78350f; font-size: 14px; margin: 5px 0 0 0;">
+            <strong>Expires on:</strong> ${expiryDate}
+          </p>
+          <p style="color: #78350f; font-size: 14px; margin: 5px 0 0 0;">
+            <strong>Days remaining:</strong> ${daysRemaining} days
+          </p>
+        </div>
+        <p style="color: #52525b; font-size: 14px;">
+          Renew now to continue enjoying premium features without interruption.
+        </p>
+        <div style="text-align: center; margin: 20px 0;">
+          <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/subscription" 
+             style="display: inline-block; padding: 12px 24px; background: #0ea5e9; color: white; text-decoration: none; border-radius: 8px; font-weight: bold;">
+            🔄 Renew Now
+          </a>
+        </div>
+        <hr style="border: none; border-top: 1px solid #e4e4e7; margin: 20px 0;" />
+        <p style="color: #a1a1aa; font-size: 12px; text-align: center;">
+          © ${new Date().getFullYear()} ScanLens. All rights reserved.
+        </p>
+      </div>
+    `,
+    });
+  }
+
+  /**
+   * ✅ إشعار انتهاء الاشتراك (تم الإلغاء)
+   */
+  async sendSubscriptionExpiredNotification(
+    recipientEmail: string,
+    recipientName: string,
+    plan: string,
+    expiredAt: Date,
+  ): Promise<boolean> {
+    const expiryDate = new Date(expiredAt).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+
+    return this.sendMail({
+      to: recipientEmail,
+      subject: `❌ ScanLens - Your ${plan} subscription has expired`,
+      html: `
+      <div style="font-family: Arial, sans-serif; max-width: 500px; margin: auto; padding: 20px; border: 1px solid #e4e4e7; border-radius: 10px;">
+        <h2 style="color: #09090b; text-align: center;">❌ Subscription Expired</h2>
+        <p style="color: #52525b; font-size: 16px;">Hello ${recipientName},</p>
+        <p style="color: #52525b; font-size: 16px;">Your <strong>${plan}</strong> subscription has expired on <strong>${expiryDate}</strong>.</p>
+        <div style="background-color: #fee2e2; padding: 15px; border-radius: 8px; border-left: 4px solid #ef4444; margin: 20px 0;">
+          <p style="color: #991b1b; font-size: 14px; margin: 0;">
+            <strong>Plan:</strong> ${plan}
+          </p>
+          <p style="color: #991b1b; font-size: 14px; margin: 5px 0 0 0;">
+            <strong>Expired on:</strong> ${expiryDate}
+          </p>
+          <p style="color: #991b1b; font-size: 14px; margin: 5px 0 0 0;">
+            <strong>Status:</strong> Downgraded to Free
+          </p>
+        </div>
+        <p style="color: #52525b; font-size: 14px;">
+          Your account has been downgraded to the <strong>Free</strong> plan.
+          You have lost access to premium features.
+        </p>
+        <p style="color: #52525b; font-size: 14px;">
+          To regain access, please purchase a new subscription.
+        </p>
+        <div style="text-align: center; margin: 20px 0;">
+          <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/subscription" 
+             style="display: inline-block; padding: 12px 24px; background: #0ea5e9; color: white; text-decoration: none; border-radius: 8px; font-weight: bold;">
+            🔄 Subscribe Now
+          </a>
+        </div>
+        <hr style="border: none; border-top: 1px solid #e4e4e7; margin: 20px 0;" />
+        <p style="color: #a1a1aa; font-size: 12px; text-align: center;">
+          © ${new Date().getFullYear()} ScanLens. All rights reserved.
+        </p>
+      </div>
+    `,
+    });
+  }
 }

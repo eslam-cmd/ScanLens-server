@@ -1,6 +1,4 @@
-// ============================================================
-// ✅ 5. تحديث الـ Auth Controller - server/src/auth/auth.controller.ts
-// ============================================================
+// server/src/auth/auth.controller.ts
 
 import {
   Body,
@@ -11,6 +9,7 @@ import {
   Request,
   Res,
   Get,
+  UnauthorizedException,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
@@ -18,6 +17,7 @@ import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { AdminGuard } from '../auth/guards/admin.guard';
+
 @Controller('auth')
 export class AuthController {
   constructor(private authService: AuthService) {}
@@ -29,7 +29,7 @@ export class AuthController {
       httpOnly: true,
       secure: isProduction,
       sameSite: isProduction ? 'none' : 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000, 
+      maxAge: 7 * 24 * 60 * 60 * 1000,
       path: '/',
     } as const;
   }
@@ -111,17 +111,66 @@ export class AuthController {
     );
   }
 
-  // server/src/auth/auth.controller.ts - إرجاع role في /me
-  @UseGuards(JwtAuthGuard)
+  // ✅ **الإصلاح**: لا تستخدم JwtAuthGuard هنا
+  // استخدم دالة مخصصة للتحقق من التوكن بشكل صامت
   @Get('me')
-  async getProfile(@Request() req) {
-    return { user: req.user }; // req.user يحتوي على role
+  async getProfile(@Request() req, @Res({ passthrough: true }) res: Response) {
+    try {
+      // ✅ التحقق من التوكن في الـ cookies
+      const token = req.cookies?.access_token;
+
+      if (!token) {
+        // ✅ لا تطبع أي شيء، فقط ارجع null
+        return { user: null };
+      }
+
+      // ✅ التحقق من صحة التوكن باستخدام AuthService
+      const user = await this.authService.validateToken(token);
+
+      if (!user) {
+        // ✅ التوكن غير صالح - احذف الكوكي
+        res.clearCookie('access_token', {
+          ...this.getCookieOptions(),
+          maxAge: 0,
+        });
+        return { user: null };
+      }
+
+      // ✅ المستخدم موجود
+      return { user };
+    } catch (error) {
+      // ✅ في حالة الخطأ، ارجع null بدون طباعة أي شيء
+      return { user: null };
+    }
   }
 
-  @UseGuards(JwtAuthGuard)
+  // ✅ نسخة POST لنفس الدالة (للتوافق مع بعض الإعدادات)
   @Post('me')
-  async getProfilePost(@Request() req) {
-    return { user: req.user };
+  async getProfilePost(
+    @Request() req,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    try {
+      const token = req.cookies?.access_token;
+
+      if (!token) {
+        return { user: null };
+      }
+
+      const user = await this.authService.validateToken(token);
+
+      if (!user) {
+        res.clearCookie('access_token', {
+          ...this.getCookieOptions(),
+          maxAge: 0,
+        });
+        return { user: null };
+      }
+
+      return { user };
+    } catch {
+      return { user: null };
+    }
   }
 
   @Post('logout')
@@ -131,5 +180,22 @@ export class AuthController {
       maxAge: 0,
     });
     return { message: 'Logged out successfully' };
+  }
+
+  // ✅ تجديد الـ Token
+  @UseGuards(JwtAuthGuard)
+  @Post('refresh')
+  async refreshToken(
+    @Request() req,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const userId = req.user.id;
+    const result = await this.authService.refreshToken(userId);
+
+    if (result.accessToken) {
+      res.cookie('access_token', result.accessToken, this.getCookieOptions());
+    }
+
+    return result;
   }
 }

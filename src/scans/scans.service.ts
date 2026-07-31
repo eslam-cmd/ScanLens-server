@@ -1,10 +1,13 @@
 // server/src/scans/scans.service.ts
+
 import {
   Injectable,
   BadRequestException,
   ForbiddenException,
   NotFoundException,
+  Logger,
 } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ScanStatus } from '@prisma/client';
 import { GoogleGenAI } from '@google/genai';
@@ -21,6 +24,7 @@ import { Queue } from 'bullmq';
 
 @Injectable()
 export class ScansService {
+  private readonly logger = new Logger(ScansService.name);
   private ai: GoogleGenAI;
 
   constructor(
@@ -35,7 +39,61 @@ export class ScansService {
     });
   }
 
-  // ✅ 1. التحقق من صلاحية المستخدم
+  // ✅ 1. التحقق من صحة الـ URL
+  private validateUrl(url: string): {
+    valid: boolean;
+    formattedUrl: string;
+    error?: string;
+  } {
+    try {
+      let formattedUrl = url.trim();
+
+      // ✅ إزالة المسافات الزائدة
+      formattedUrl = formattedUrl.replace(/\s+/g, '');
+
+      // ✅ إزالة الـ // المكررة في البداية
+      formattedUrl = formattedUrl.replace(/^\/\//, '');
+
+      // ✅ إضافة البروتوكول إذا كان مفقوداً
+      if (
+        !formattedUrl.startsWith('http://') &&
+        !formattedUrl.startsWith('https://')
+      ) {
+        formattedUrl = `https://${formattedUrl}`;
+      }
+
+      // ✅ التحقق من صحة الـ URL
+      const parsedUrl = new URL(formattedUrl);
+
+      // ✅ التحقق من وجود hostname صالح
+      if (!parsedUrl.hostname || parsedUrl.hostname.length < 3) {
+        return {
+          valid: false,
+          formattedUrl,
+          error: 'Invalid domain name',
+        };
+      }
+
+      // ✅ التحقق من عدم وجود // مكررة
+      if (
+        formattedUrl.includes('//') &&
+        formattedUrl.indexOf('//') !== formattedUrl.indexOf('://') + 1
+      ) {
+        // إصلاح الـ // المكررة
+        formattedUrl = formattedUrl.replace(/([^:]\/)\/+/g, '$1');
+      }
+
+      return { valid: true, formattedUrl };
+    } catch (error) {
+      return {
+        valid: false,
+        formattedUrl: url,
+        error: 'Invalid URL format',
+      };
+    }
+  }
+
+  // ✅ 2. التحقق من صلاحية المستخدم
   private async checkUserCapability(
     userId: string | undefined,
     isDeepScan: boolean,
@@ -64,10 +122,31 @@ export class ScansService {
       throw new ForbiddenException('Invalid plan');
     }
 
-    if (isDeepScan && !plan.deepScanEnabled) {
-      throw new ForbiddenException('Deep scan is not available on your plan');
+    // ✅ Deep Scan متاح للجميع (Free, Pro, Extra)
+    if (isDeepScan) {
+      // ✅ التحقق من عدد Deep Scans اليومية للـ Free
+      if (planId === 'free') {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const deepScansToday = await this.prisma.usageLog.count({
+          where: {
+            userId,
+            action: 'DEEP_SCAN',
+            createdAt: { gte: today },
+          },
+        });
+
+        const maxDeepScans = 5;
+        if (deepScansToday >= maxDeepScans) {
+          throw new ForbiddenException(
+            `You have reached your daily Deep Scan limit of ${maxDeepScans}. Upgrade to Pro for unlimited Deep Scans.`,
+          );
+        }
+      }
     }
 
+    // ✅ حدود الفحوصات اليومية
     if (!plan.unlimitedScans) {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -75,14 +154,16 @@ export class ScansService {
       const todayScans = await this.prisma.usageLog.count({
         where: {
           userId,
-          action: 'SCAN',
+          action: {
+            in: ['SCAN', 'DEEP_SCAN'],
+          },
           createdAt: { gte: today },
         },
       });
 
       if (todayScans >= plan.scansPerDay) {
         throw new ForbiddenException(
-          `You have reached your daily scan limit of ${plan.scansPerDay} scans`,
+          `You have reached your daily scan limit of ${plan.scansPerDay} scans. Upgrade to Pro for unlimited scans.`,
         );
       }
     }
@@ -90,7 +171,7 @@ export class ScansService {
     return { allowed: true, plan: planId, isGuest: false };
   }
 
-  // ✅ 2. فحص SSL/TLS
+  // ✅ 3. فحص SSL/TLS
   private async inspectSsl(targetUrl: string): Promise<any> {
     return new Promise((resolve) => {
       try {
@@ -142,24 +223,29 @@ export class ScansService {
     });
   }
 
-  // ✅ 3. الفحص الرئيسي المحسن
+  // ✅ 4. الفحص الرئيسي
   async scanUrl(url: string, userId?: string, isDeepScan: boolean = false) {
+    // ✅ التحقق من صحة الـ URL أولاً
+    const urlValidation = this.validateUrl(url);
+
+    if (!urlValidation.valid) {
+      this.logger.warn(`❌ Invalid URL: ${url} - ${urlValidation.error}`);
+      throw new BadRequestException(
+        `Invalid URL: ${url}. Please enter a valid domain name.`,
+      );
+    }
+
+    const formattedUrl = urlValidation.formattedUrl;
+
     // ✅ التحقق من الصلاحية
     const capability = await this.checkUserCapability(userId, isDeepScan);
     if (!capability.allowed) {
       throw new ForbiddenException('Scan not allowed');
     }
 
-    // ✅ تنسيق الـ URL
-    let formattedUrl = url.trim();
-    if (
-      !formattedUrl.startsWith('http://') &&
-      !formattedUrl.startsWith('https://')
-    ) {
-      formattedUrl = `https://${formattedUrl}`;
-    }
-
-    console.log('🔍 Formatted URL:', formattedUrl);
+    this.logger.log(`🔍 Formatted URL: ${formattedUrl}`);
+    this.logger.log(`🔍 User Plan: ${capability.plan}`);
+    this.logger.log(`🔍 Is Deep Scan: ${isDeepScan}`);
 
     try {
       // ✅ تنفيذ الفحص
@@ -175,8 +261,7 @@ export class ScansService {
         },
       });
 
-      console.log('🔍 Response Status:', response.status);
-      console.log('🔍 Response Headers Keys:', Object.keys(response.headers));
+      this.logger.log(`🔍 Response Status: ${response.status}`);
 
       const responseHeaders = response.headers as Record<string, string>;
 
@@ -200,17 +285,12 @@ export class ScansService {
         );
         if (found) {
           presentHeaders.push(header.name);
-          console.log(`✅ Header found: ${header.name}`);
         } else {
           missingHeaders.push(header.name);
-          console.log(`❌ Header missing: ${header.name}`);
         }
       }
 
-      console.log('📊 Present Headers:', presentHeaders);
-      console.log('📊 Missing Headers:', missingHeaders);
-
-      // ✅ حساب النتيجة المحسنة
+      // ✅ حساب النتيجة
       const headerWeights: Record<string, number> = {
         'content-security-policy': 25,
         'strict-transport-security': 20,
@@ -236,23 +316,19 @@ export class ScansService {
       let score =
         totalWeight > 0 ? Math.round((earnedWeight / totalWeight) * 100) : 0;
 
-      console.log('📊 Score before deep scan:', score);
-
       // ✅ الفحص العميق
       let sslAnalysis: any = null;
       let corsAnalysis: any = null;
 
       if (isDeepScan) {
-        console.log('🔍 Running deep scan...');
+        this.logger.log('🔍 Running deep scan...');
+
         sslAnalysis = await this.inspectSsl(formattedUrl);
-        console.log('🔍 SSL Analysis:', sslAnalysis);
 
         if (sslAnalysis && !sslAnalysis.valid) {
           score = Math.max(0, score - 25);
-          console.log('📊 Score after SSL penalty:', score);
         } else if (sslAnalysis && sslAnalysis.valid) {
           score = Math.min(100, score + 5);
-          console.log('📊 Score after SSL bonus:', score);
         }
 
         const allowOrigin = responseHeaders['access-control-allow-origin'];
@@ -261,20 +337,17 @@ export class ScansService {
           riskLevel:
             allowOrigin === '*' ? 'HIGH' : allowOrigin ? 'LOW' : 'SECURE',
         };
-        console.log('🔍 CORS Analysis:', corsAnalysis);
 
         if (allowOrigin === '*') {
           score = Math.max(0, score - 20);
-          console.log('📊 Score after CORS penalty:', score);
         } else if (allowOrigin) {
           score = Math.min(100, score + 5);
-          console.log('📊 Score after CORS bonus:', score);
         }
       }
 
-      console.log('📊 Final Score:', score);
+      this.logger.log(`📊 Final Score: ${score}`);
 
-      // ✅ إنشاء الثغرات مع اقتراحات الإصلاح
+      // ✅ إنشاء الثغرات
       const detectedVulnerabilities: any[] = [];
 
       for (const header of securityHeaders) {
@@ -305,15 +378,12 @@ export class ScansService {
         });
       }
 
-      console.log('📊 Vulnerabilities:', detectedVulnerabilities.length);
-
       // ✅ حفظ في قاعدة البيانات
       let createdScanId: string | undefined = undefined;
       let comparison: any = null;
 
       if (userId) {
         try {
-          console.log('🔍 Saving to database for user:', userId);
           const targetDomain = new URL(formattedUrl).hostname;
 
           let website = await this.prisma.website.findFirst({
@@ -328,7 +398,6 @@ export class ScansService {
                 userId,
               },
             });
-            console.log('🔍 Website created:', website.id);
           }
 
           // ✅ المقارنة مع الفحص السابق
@@ -351,7 +420,6 @@ export class ScansService {
                     ? 'REGRESSED'
                     : 'UNCHANGED',
             };
-            console.log('🔍 Comparison:', comparison);
           }
 
           // ✅ إنشاء الفحص
@@ -367,24 +435,25 @@ export class ScansService {
             },
           });
           createdScanId = newScan.id;
-          console.log('🔍 Scan created with ID:', createdScanId);
 
           // ✅ تسجيل الاستخدام
           await this.prisma.usageLog.create({
             data: {
               userId,
               action: isDeepScan ? 'DEEP_SCAN' : 'SCAN',
-              metadata: { url: formattedUrl, score, deepScan: isDeepScan },
+              metadata: {
+                url: formattedUrl,
+                score,
+                deepScan: isDeepScan,
+                plan: capability.plan,
+              },
             },
           });
-        } catch (dbError) {
-          console.warn(
-            '⚠️ Database error, continuing without saving:',
-            dbError.message,
+        } catch (dbError: any) {
+          this.logger.warn(
+            `⚠️ Database error, continuing without saving: ${dbError.message}`,
           );
         }
-      } else {
-        console.log('👤 Guest scan - no user ID, skipping database save');
       }
 
       // ✅ النتيجة النهائية
@@ -406,19 +475,20 @@ export class ScansService {
         comparison,
         plan: capability.plan,
         isGuest: capability.isGuest,
+        deepScanLimit:
+          capability.plan === 'free'
+            ? {
+                max: 5,
+                used: 0,
+                remaining: 5,
+              }
+            : undefined,
       };
 
-      console.log('✅ Final result:', {
-        id: result.id,
-        score: result.score,
-        vulnCount: result.vulnerabilities.length,
-        isGuest: result.isGuest,
-      });
-      console.log('🔍 ========== END SCAN ==========');
-
+      this.logger.log(`✅ Scan completed successfully for: ${formattedUrl}`);
       return result;
     } catch (error) {
-      console.error('❌ Scan Error:', error);
+      this.logger.error(`❌ Scan Error: ${error}`);
       if (error instanceof ForbiddenException) {
         throw error;
       }
@@ -449,7 +519,7 @@ export class ScansService {
     return suggestions[headerName] || 'Add the missing security header.';
   }
 
-  // ✅ 4. توليد AI Fix
+  // ✅ 5. توليد AI Fix
   async generateAiFix(
     vulnerabilityTitle: string,
     context: string,
@@ -477,15 +547,30 @@ Format your output in Markdown with:
 
       return response.text || 'No automated remediation available.';
     } catch (err: any) {
-      console.error('Gemini AI Generation Error:', err);
+      this.logger.error(`Gemini AI Generation Error: ${err}`);
       throw new BadRequestException('Unable to generate AI fix at this time.');
     }
   }
 
-  // ✅ 5. جلب تاريخ الفحوصات
+  // ✅ 6. جلب تاريخ الفحوصات
   async getUserHistory(userId: string) {
+    const websites = await this.prisma.website.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+
+    const websiteIds = websites.map((w) => w.id);
+
+    if (websiteIds.length === 0) {
+      return [];
+    }
+
     return this.prisma.scan.findMany({
-      where: { website: { userId } },
+      where: {
+        websiteId: {
+          in: websiteIds,
+        },
+      },
       include: {
         website: true,
         vulnerabilities: true,
@@ -494,22 +579,55 @@ Format your output in Markdown with:
     });
   }
 
-  // ✅ 6. حذف فحص
+  // ✅ 7. حذف فحص
   async deleteScan(scanId: string, userId: string) {
-    const scan = await this.prisma.scan.findFirst({
-      where: { id: scanId, website: { userId } },
+    const websites = await this.prisma.website.findMany({
+      where: { userId },
+      select: { id: true },
     });
-    if (!scan) throw new BadRequestException('Scan not found');
-    return this.prisma.scan.delete({ where: { id: scanId } });
-  }
 
-  // ✅ 7. جلب فحص معين
-  async getScanById(scanId: string, userId?: string) {
+    const websiteIds = websites.map((w) => w.id);
+
     const scan = await this.prisma.scan.findFirst({
       where: {
         id: scanId,
-        ...(userId ? { website: { userId } } : {}),
+        websiteId: {
+          in: websiteIds,
+        },
       },
+    });
+
+    if (!scan) {
+      throw new BadRequestException(
+        'Scan not found or does not belong to user',
+      );
+    }
+
+    return this.prisma.scan.delete({ where: { id: scanId } });
+  }
+
+  // ✅ 8. جلب فحص معين
+  async getScanById(scanId: string, userId?: string) {
+    let whereClause: any = { id: scanId };
+
+    if (userId) {
+      const websites = await this.prisma.website.findMany({
+        where: { userId },
+        select: { id: true },
+      });
+
+      const websiteIds = websites.map((w) => w.id);
+
+      whereClause = {
+        id: scanId,
+        websiteId: {
+          in: websiteIds,
+        },
+      };
+    }
+
+    const scan = await this.prisma.scan.findFirst({
+      where: whereClause,
       include: {
         website: true,
         vulnerabilities: true,
@@ -523,7 +641,7 @@ Format your output in Markdown with:
     return scan;
   }
 
-  // ✅ 8. توليد تقرير PDF كامل
+  // ✅ 9. توليد تقرير PDF
   async generatePdfReport(scanId: string, userId?: string): Promise<Buffer> {
     const scan = await this.getScanById(scanId, userId);
 
@@ -535,7 +653,7 @@ Format your output in Markdown with:
       doc.on('end', () => resolve(Buffer.concat(buffers)));
       doc.on('error', (err) => reject(err));
 
-      // ✅ عنوان التقرير
+      // عنوان التقرير
       doc
         .fontSize(24)
         .font('Helvetica-Bold')
@@ -548,7 +666,7 @@ Format your output in Markdown with:
         .text('Security Audit Report', { align: 'center' });
       doc.moveDown(0.5);
 
-      // ✅ خط فاصل
+      // خط فاصل
       doc
         .moveTo(50, doc.y)
         .lineTo(550, doc.y)
@@ -557,7 +675,7 @@ Format your output in Markdown with:
         .stroke();
       doc.moveDown(0.5);
 
-      // ✅ معلومات التقرير
+      // معلومات التقرير
       const websiteUrl = (scan as any).website?.url || 'N/A';
       const domain = (scan as any).website?.domain || 'N/A';
 
@@ -590,7 +708,7 @@ Format your output in Markdown with:
 
       doc.moveDown(0.5);
 
-      // ✅ خط فاصل
+      // خط فاصل
       doc
         .moveTo(50, doc.y)
         .lineTo(550, doc.y)
@@ -599,7 +717,7 @@ Format your output in Markdown with:
         .stroke();
       doc.moveDown(0.5);
 
-      // ✅ قسم النتيجة
+      // قسم النتيجة
       doc
         .fontSize(14)
         .font('Helvetica-Bold')
@@ -607,7 +725,7 @@ Format your output in Markdown with:
         .text('Security Score', { underline: true });
       doc.moveDown(0.3);
 
-      // ✅ شريط النتيجة
+      // شريط النتيجة
       const scoreWidth = (scan.score / 100) * 400;
       const scoreColor =
         scan.score >= 80 ? '#22c55e' : scan.score >= 50 ? '#f59e0b' : '#ef4444';
@@ -615,7 +733,6 @@ Format your output in Markdown with:
       doc.rect(50, doc.y, 400, 20).fillColor('#f4f4f5').fill();
       doc.rect(50, doc.y, scoreWidth, 20).fillColor(scoreColor).fill();
 
-      // ✅ نص النتيجة
       doc
         .fontSize(10)
         .font('Helvetica-Bold')
@@ -623,8 +740,6 @@ Format your output in Markdown with:
         .text(`${scan.score}%`, 460, doc.y - 3);
 
       doc.moveDown(1.5);
-
-      // ✅ خط فاصل
       doc
         .moveTo(50, doc.y)
         .lineTo(550, doc.y)
@@ -633,7 +748,7 @@ Format your output in Markdown with:
         .stroke();
       doc.moveDown(0.5);
 
-      // ✅ قسم الثغرات
+      // قسم الثغرات
       doc
         .fontSize(14)
         .font('Helvetica-Bold')
@@ -689,8 +804,6 @@ Format your output in Markdown with:
       }
 
       doc.moveDown(0.5);
-
-      // ✅ خط فاصل
       doc
         .moveTo(50, doc.y)
         .lineTo(550, doc.y)
@@ -699,65 +812,7 @@ Format your output in Markdown with:
         .stroke();
       doc.moveDown(0.5);
 
-      // ✅ قسم الإحصائيات الإضافية
-      doc
-        .fontSize(14)
-        .font('Helvetica-Bold')
-        .fillColor('#09090b')
-        .text('Additional Details', { underline: true });
-      doc.moveDown(0.3);
-
-      const additionalInfo = [
-        ['Total Vulnerabilities:', vulnerabilities.length.toString()],
-        [
-          'Critical:',
-          vulnerabilities
-            .filter((v: any) => v.severity === 'CRITICAL')
-            .length.toString(),
-        ],
-        [
-          'High:',
-          vulnerabilities
-            .filter((v: any) => v.severity === 'HIGH')
-            .length.toString(),
-        ],
-        [
-          'Medium:',
-          vulnerabilities
-            .filter((v: any) => v.severity === 'MEDIUM')
-            .length.toString(),
-        ],
-        [
-          'Low:',
-          vulnerabilities
-            .filter((v: any) => v.severity === 'LOW')
-            .length.toString(),
-        ],
-      ];
-
-      additionalInfo.forEach(([label, value]) => {
-        doc
-          .fontSize(10)
-          .font('Helvetica-Bold')
-          .fillColor('#52525b')
-          .text(label, { continued: true })
-          .font('Helvetica')
-          .fillColor('#09090b')
-          .text(` ${value}`, { align: 'right' });
-      });
-
-      doc.moveDown(0.5);
-
-      // ✅ خط فاصل
-      doc
-        .moveTo(50, doc.y)
-        .lineTo(550, doc.y)
-        .strokeColor('#e4e4e7')
-        .lineWidth(1)
-        .stroke();
-      doc.moveDown(0.5);
-
-      // ✅ التذييل
+      // التذييل
       doc
         .fontSize(8)
         .font('Helvetica')
@@ -770,12 +825,11 @@ Format your output in Markdown with:
         .fillColor('#a1a1aa')
         .text('© ScanLens - Security Audit Platform', { align: 'center' });
 
-      // ✅ إنهاء المستند
       doc.end();
     });
   }
 
-  // ✅ 9. تصدير CSV لتقرير واحد
+  // ✅ 10. تصدير CSV
   async generateCsvReport(scanId: string, userId?: string): Promise<string> {
     const scan = await this.getScanById(scanId, userId);
     const vulnerabilities = (scan as any).vulnerabilities || [];
@@ -815,28 +869,20 @@ Format your output in Markdown with:
       .join('\n');
   }
 
-  // ✅ 10. جلب إحصائيات المستخدم
+  // ✅ 11. جلب إحصائيات المستخدم
   async getUserStats(userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
+    const websites = await this.prisma.website.findMany({
+      where: { userId },
       include: {
-        websites: {
+        scans: {
           include: {
-            scans: {
-              include: {
-                vulnerabilities: true,
-              },
-            },
+            vulnerabilities: true,
           },
         },
       },
     });
 
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    const allScans = user.websites.flatMap((w) => w.scans);
+    const allScans = websites.flatMap((w) => w.scans);
     const totalScans = allScans.length;
     const averageScore =
       totalScans > 0
@@ -852,7 +898,7 @@ Format your output in Markdown with:
     ).length;
 
     return {
-      totalWebsites: user.websites.length,
+      totalWebsites: websites.length,
       totalScans,
       averageScore,
       vulnerabilities: {
@@ -869,10 +915,25 @@ Format your output in Markdown with:
     };
   }
 
-  // ✅ 11. جلب الفحوصات الأخيرة
+  // ✅ 12. جلب الفحوصات الأخيرة
   async getRecentScans(userId: string, limit: number = 10) {
+    const websites = await this.prisma.website.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+
+    const websiteIds = websites.map((w) => w.id);
+
+    if (websiteIds.length === 0) {
+      return [];
+    }
+
     return this.prisma.scan.findMany({
-      where: { website: { userId } },
+      where: {
+        websiteId: {
+          in: websiteIds,
+        },
+      },
       include: {
         website: {
           select: {
@@ -892,7 +953,7 @@ Format your output in Markdown with:
     });
   }
 
-  // ✅ 12. إعادة فحص موقع
+  // ✅ 13. إعادة فحص موقع
   async rescanWebsite(
     websiteId: string,
     userId: string,
@@ -909,7 +970,7 @@ Format your output in Markdown with:
     return this.scanUrl(website.url, userId, isDeepScan);
   }
 
-  // ✅ 13. جلب جميع المواقع للمستخدم
+  // ✅ 14. جلب جميع المواقع
   async getUserWebsites(userId: string) {
     return this.prisma.website.findMany({
       where: { userId },
@@ -925,7 +986,7 @@ Format your output in Markdown with:
     });
   }
 
-  // ✅ 14. حذف موقع
+  // ✅ 15. حذف موقع
   async deleteWebsite(websiteId: string, userId: string) {
     const website = await this.prisma.website.findFirst({
       where: { id: websiteId, userId },
@@ -939,11 +1000,296 @@ Format your output in Markdown with:
       where: { id: websiteId },
     });
   }
+
+  // ✅ 16. جلب نشاطات المستخدم
   async getUserActivities(userId: string) {
     return this.prisma.usageLog.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
       take: 20,
     });
+  }
+
+  // ============================================================
+  // ✅ دوال التنظيف والتخزين
+  // ============================================================
+
+  private getRetentionDays(
+    plan: string,
+    role: string,
+  ): number | typeof Infinity {
+    if (role === 'admin') {
+      return Infinity;
+    }
+
+    const retentionMap: Record<string, number> = {
+      free: 7,
+      pro: 30,
+      extra: 90,
+      premium: 365,
+    };
+
+    return retentionMap[plan] || 7;
+  }
+
+  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  async cleanExpiredScans() {
+    this.logger.log('🧹 Starting expired scans cleanup...');
+
+    try {
+      const users = await this.prisma.user.findMany({
+        select: {
+          id: true,
+          plan: true,
+          role: true,
+        },
+      });
+
+      let totalDeleted = 0;
+      const results: { userId: string; plan: string; deleted: number }[] = [];
+
+      for (const user of users) {
+        const retentionDays = this.getRetentionDays(user.plan, user.role);
+
+        if (retentionDays === Infinity) {
+          this.logger.debug(
+            `⏭️ Skipping user ${user.id} (${user.plan}) - Permanent retention`,
+          );
+          continue;
+        }
+
+        const cutoffDate = new Date();
+        cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+
+        const websites = await this.prisma.website.findMany({
+          where: { userId: user.id },
+          select: { id: true },
+        });
+
+        const websiteIds = websites.map((w) => w.id);
+
+        if (websiteIds.length === 0) {
+          continue;
+        }
+
+        const deleted = await this.prisma.scan.deleteMany({
+          where: {
+            websiteId: {
+              in: websiteIds,
+            },
+            createdAt: {
+              lt: cutoffDate,
+            },
+          },
+        });
+
+        if (deleted.count > 0) {
+          totalDeleted += deleted.count;
+          results.push({
+            userId: user.id,
+            plan: user.plan,
+            deleted: deleted.count,
+          });
+          this.logger.log(
+            `🗑️ Deleted ${deleted.count} expired scans for user ${user.id} (${user.plan} plan)`,
+          );
+        }
+      }
+
+      if (totalDeleted > 0) {
+        this.logger.log(
+          `✅ Cleanup complete: ${totalDeleted} total scans deleted`,
+        );
+      } else {
+        this.logger.log('✅ No expired scans found to delete');
+      }
+
+      return { totalDeleted, results };
+    } catch (error) {
+      this.logger.error('❌ Failed to clean expired scans:', error);
+      throw error;
+    }
+  }
+
+  async cleanUserExpiredScans(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { plan: true, role: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const retentionDays = this.getRetentionDays(user.plan, user.role);
+
+    if (retentionDays === Infinity) {
+      return { message: 'Permanent retention - no scans deleted', deleted: 0 };
+    }
+
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+
+    const websites = await this.prisma.website.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+
+    const websiteIds = websites.map((w) => w.id);
+
+    if (websiteIds.length === 0) {
+      return { deleted: 0, retentionDays, message: 'No websites found' };
+    }
+
+    const deleted = await this.prisma.scan.deleteMany({
+      where: {
+        websiteId: {
+          in: websiteIds,
+        },
+        createdAt: {
+          lt: cutoffDate,
+        },
+      },
+    });
+
+    this.logger.log(
+      `🗑️ Deleted ${deleted.count} expired scans for user ${userId}`,
+    );
+    return { deleted: deleted.count, retentionDays };
+  }
+
+  async getUserStorageStats(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { plan: true, role: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const retentionDays = this.getRetentionDays(user.plan, user.role);
+
+    const websites = await this.prisma.website.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+
+    const websiteIds = websites.map((w) => w.id);
+
+    if (websiteIds.length === 0) {
+      return {
+        totalScans: 0,
+        expiredScans: 0,
+        retentionDays,
+        isPermanent: retentionDays === Infinity,
+      };
+    }
+
+    const totalScans = await this.prisma.scan.count({
+      where: {
+        websiteId: {
+          in: websiteIds,
+        },
+      },
+    });
+
+    if (retentionDays !== Infinity) {
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+
+      const expiredScans = await this.prisma.scan.count({
+        where: {
+          websiteId: {
+            in: websiteIds,
+          },
+          createdAt: {
+            lt: cutoffDate,
+          },
+        },
+      });
+
+      return {
+        totalScans,
+        expiredScans,
+        retentionDays,
+        isPermanent: false,
+      };
+    }
+
+    return {
+      totalScans,
+      expiredScans: 0,
+      retentionDays: Infinity,
+      isPermanent: true,
+    };
+  }
+
+  async getLatestScan(userId: string) {
+    const websites = await this.prisma.website.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+
+    const websiteIds = websites.map((w) => w.id);
+
+    if (websiteIds.length === 0) {
+      return null;
+    }
+
+    return this.prisma.scan.findFirst({
+      where: {
+        websiteId: {
+          in: websiteIds,
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        website: true,
+        vulnerabilities: true,
+      },
+    });
+  }
+
+  async getDailyStats(userId: string) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const websites = await this.prisma.website.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+
+    const websiteIds = websites.map((w) => w.id);
+
+    const scansToday = await this.prisma.usageLog.count({
+      where: {
+        userId,
+        action: {
+          in: ['SCAN', 'DEEP_SCAN'],
+        },
+        createdAt: { gte: today },
+      },
+    });
+
+    const deepScansToday = await this.prisma.usageLog.count({
+      where: {
+        userId,
+        action: 'DEEP_SCAN',
+        createdAt: { gte: today },
+      },
+    });
+
+    return {
+      scansToday,
+      deepScansToday,
+      totalScans: await this.prisma.scan.count({
+        where: {
+          websiteId: {
+            in: websiteIds,
+          },
+        },
+      }),
+    };
   }
 }

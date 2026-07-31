@@ -40,7 +40,7 @@ export class AuthService {
     const otp = this.generateOtp();
     const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
-    // ✅ تحديد إذا كان المستخدم أدمن (يمكنك تغيير الإيميل)
+    // ✅ تحديد إذا كان المستخدم أدمن
     const isAdmin = dto.email === 'hdayaaslam34@gmail.com';
 
     const user = await this.prisma.user.create({
@@ -51,7 +51,7 @@ export class AuthService {
         verificationCode: otp,
         verificationExpires: otpExpires,
         isVerified: false,
-        role: isAdmin ? 'admin' : 'user', // ✅
+        role: isAdmin ? 'admin' : 'user',
       },
       select: {
         id: true,
@@ -89,7 +89,6 @@ export class AuthService {
       throw new UnauthorizedException('Invalid email or password');
     }
 
-    // توليد OTP في كل عملية تسجيل دخول
     const otp = this.generateOtp();
     const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
@@ -141,11 +140,10 @@ export class AuthService {
       },
     });
 
-    // ✅ توليد توكن يحتوي على role
     const token = this.generateToken(
       updatedUser.id,
       updatedUser.email,
-      updatedUser.role, // ✅ role من قاعدة البيانات
+      updatedUser.role,
     );
 
     return {
@@ -154,7 +152,7 @@ export class AuthService {
         id: updatedUser.id,
         email: updatedUser.email,
         name: updatedUser.name,
-        role: updatedUser.role, // ✅ نرسل role للفرونت
+        role: updatedUser.role,
       },
       accessToken: token,
     };
@@ -232,13 +230,7 @@ export class AuthService {
       );
     }
 
-    // ✅ توليد توكن مؤقت مع role
-    const tempToken = this.generateToken(
-      user.id,
-      user.email,
-      user.role, // ✅ role
-      '5m',
-    );
+    const tempToken = this.generateToken(user.id, user.email, user.role, '5m');
 
     return {
       message: 'OTP verified successfully.',
@@ -367,7 +359,7 @@ export class AuthService {
         id: true,
         email: true,
         name: true,
-        role: true, // ✅ نضيف role
+        role: true,
         isVerified: true,
         plan: true,
         createdAt: true,
@@ -381,16 +373,77 @@ export class AuthService {
     return user;
   }
 
+  // ✅ 7. تجديد الـ Token
+  async refreshToken(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        isVerified: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (!user.isVerified) {
+      throw new UnauthorizedException('Account not verified');
+    }
+
+    const token = this.generateToken(user.id, user.email, user.role);
+
+    return {
+      accessToken: token,
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+      },
+    };
+  }
+
   private generateToken(
     userId: string,
     email: string,
     role: string = 'user',
     expiresIn: string = '7d',
   ): string {
-    console.log('🔑 Generating token for:', { userId, email, role }); // ✅
+    console.log('🔑 Generating token for:', { userId, email, role });
     return this.jwtService.sign(
       { sub: userId, email, role },
       { expiresIn: expiresIn as any },
     );
+  }
+  async validateToken(token: string): Promise<any | null> {
+    try {
+      // ✅ التحقق من صحة التوكن
+      const payload = this.jwtService.verify(token);
+
+      if (!payload || !payload.sub) {
+        return null;
+      }
+
+      // ✅ جلب المستخدم من قاعدة البيانات
+      const user = await this.prisma.user.findUnique({
+        where: { id: payload.sub },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          plan: true,
+          role: true,
+          isVerified: true,
+          createdAt: true,
+        },
+      });
+
+      return user;
+    } catch (error) {
+      // ✅ التوكن غير صالح
+      return null;
+    }
   }
 }

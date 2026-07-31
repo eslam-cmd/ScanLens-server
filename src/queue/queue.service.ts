@@ -1,5 +1,6 @@
 // server/src/queue/queue.service.ts
-import { Injectable, Inject, forwardRef } from '@nestjs/common';
+
+import { Injectable } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 
@@ -12,31 +13,84 @@ export class QueueService {
     userId?: string;
     isDeepScan: boolean;
   }) {
-    const job = await this.scanQueue.add('scan', data);
+    const job = await this.scanQueue.add('scan', data, {
+      attempts: 3,
+      backoff: {
+        type: 'exponential',
+        delay: 3000,
+      },
+      // ✅ إما استخدام boolean
+      removeOnComplete: false, // ✅ لا تحذف بعد الإكمال
+      removeOnFail: true, // ✅ احذف الفاشلة فقط
+    });
+
     console.log('✅ Job added:', {
       id: job.id,
-      data: job.data,
+      url: job.data.url,
+      isDeepScan: job.data.isDeepScan,
+      maxAttempts: job.opts?.attempts || 3,
     });
+
     return job;
   }
 
   async getJobStatus(jobId: string) {
-    const job = await this.scanQueue.getJob(jobId);
-    if (!job) return null;
+    try {
+      const job = await this.scanQueue.getJob(jobId);
 
-    const state = await job.getState();
-    const result = job.returnvalue;
+      if (!job) {
+        const state = await this.scanQueue.getJobState(jobId);
+        console.log(`📊 Job ${jobId} state from getJobState:`, state);
 
-    console.log('📊 Job status:', {
-      id: job.id,
-      state,
-      hasResult: !!result,
-    });
+        if (state === 'completed') {
+          return {
+            id: jobId,
+            status: 'completed',
+            result: null,
+            message: 'Job completed but removed',
+          };
+        }
 
-    return {
-      id: job.id,
-      status: state,
-      result: result,
-    };
+        if (state === 'failed') {
+          return {
+            id: jobId,
+            status: 'failed',
+            result: null,
+            message: 'Job failed',
+          };
+        }
+
+        console.log(`❌ Job ${jobId} not found`);
+        return null;
+      }
+
+      const state = await job.getState();
+      const result = job.returnvalue;
+
+      console.log(`📊 Job ${jobId} status:`, {
+        state,
+        hasResult: !!result,
+        resultSummary: result
+          ? {
+              id: result.id,
+              score: result.score,
+              vulnCount: result.vulnerabilities?.length || 0,
+            }
+          : null,
+      });
+
+      return {
+        id: job.id,
+        status: state,
+        result: result || null,
+        attempts: job.attemptsMade,
+        maxAttempts: job.opts?.attempts || 3,
+        failedReason: job.failedReason || null,
+        timestamp: job.timestamp,
+      };
+    } catch (error) {
+      console.error(`❌ Error getting job status for ${jobId}:`, error.message);
+      return null;
+    }
   }
 }
