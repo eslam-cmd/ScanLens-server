@@ -8,7 +8,7 @@ import {
   Res,
   HttpStatus,
 } from '@nestjs/common';
-import { Response } from 'express';
+import type{ Response } from 'express';
 import { PrismaService } from '../../prisma/prisma.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AdminGuard } from '../auth/guards/admin.guard';
