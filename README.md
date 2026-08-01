@@ -12,16 +12,15 @@ A robust and scalable backend API built with **NestJS** and **TypeScript** for s
 ### Prerequisites
 
 - **Node.js** 18.17 or higher
-- **npm** or **yarn** package manager
+- **npm** package manager
 - **PostgreSQL** or compatible database
-- **Redis** (for job queue)
 
 ### Installation
 
 1. Clone the repository:
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/eslam-cmd/ScanLens-server
 cd ScanLens/server
 ```
 
@@ -29,8 +28,6 @@ cd ScanLens/server
 
 ```bash
 npm install
-# or
-yarn install
 ```
 
 3. Create environment configuration (`.env`):
