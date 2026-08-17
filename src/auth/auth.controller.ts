@@ -40,9 +40,18 @@ export class AuthController {
 
   // ✅ دالة login المعدلة
   @Post('login')
-  async login(@Body() dto: LoginDto) {
+  async login(
+    @Body() dto: LoginDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
     try {
       const result = await this.authService.login(dto);
+
+      // ✅ إذا في accessToken (يعني مستخدم مفعّل)، خزنه بالكوكي
+      if (result.accessToken) {
+        res.cookie('access_token', result.accessToken, this.getCookieOptions());
+      }
+
       return {
         success: true,
         ...result,
