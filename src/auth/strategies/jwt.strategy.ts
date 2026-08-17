@@ -15,24 +15,17 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     super({
       jwtFromRequest: ExtractJwt.fromExtractors([
         (req: Request) => {
-          // ✅ تأكد من قراءة الكوكيز بشكل صحيح
-          console.log('🔍 Checking cookies:', req.cookies);
+          // ✅ جلب التوكن من Authorization Header أولاً
+          const authHeader = req.headers.authorization;
+          if (authHeader && authHeader.startsWith('Bearer ')) {
+            return authHeader.substring(7);
+          }
 
+          // ✅ جلب التوكن من الكوكيز
           if (req && req.cookies && req.cookies['access_token']) {
-            console.log('✅ Token found in cookies');
             return req.cookies['access_token'];
           }
 
-          // ✅ التحقق من Authorization Header
-          if (req && req.headers && req.headers.authorization) {
-            const token = req.headers.authorization.replace('Bearer ', '');
-            if (token) {
-              console.log('✅ Token found in Authorization header');
-              return token;
-            }
-          }
-
-          console.log('❌ No token found');
           return null;
         },
       ]),
@@ -46,10 +39,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     req: Request,
     payload: { sub: string; email: string; role?: string },
   ) {
-    console.log('🔍 Validating payload:', payload);
-
     if (!payload || !payload.sub) {
-      console.log('❌ Invalid payload - no sub');
       throw new UnauthorizedException('Invalid token payload');
     }
 
@@ -67,16 +57,11 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       });
 
       if (!user) {
-        console.log('❌ User not found:', payload.sub);
         throw new UnauthorizedException('User not found');
       }
 
-      if (!user.isVerified) {
-        console.log('❌ User not verified:', user.email);
-        throw new UnauthorizedException('Account not verified');
-      }
-
-      console.log('✅ User validated:', user.email, user.role);
+      // ✅ لا نمنع المستخدمين غير الموثقين، نسمح لهم بالدخول
+      // ولكن سيتم منعهم من الوصول إلى بعض endpoints لاحقاً
 
       return {
         id: user.id,
@@ -87,7 +72,6 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
         plan: user.plan || 'free',
       };
     } catch (error) {
-      console.error('❌ JWT Validation Error:', error.message);
       throw new UnauthorizedException('Invalid token');
     }
   }

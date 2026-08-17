@@ -1,5 +1,4 @@
 // server/src/auth/auth.controller.ts
-
 import {
   Body,
   Controller,
@@ -10,13 +9,14 @@ import {
   Res,
   Get,
   UnauthorizedException,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
-import { AdminGuard } from '../auth/guards/admin.guard';
 
 @Controller('auth')
 export class AuthController {
@@ -24,7 +24,6 @@ export class AuthController {
 
   private getCookieOptions() {
     const isProduction = process.env.NODE_ENV === 'production';
-
     return {
       httpOnly: true,
       secure: isProduction,
@@ -39,9 +38,28 @@ export class AuthController {
     return await this.authService.register(dto);
   }
 
+  // ✅ دالة login المعدلة
   @Post('login')
   async login(@Body() dto: LoginDto) {
-    return await this.authService.login(dto);
+    try {
+      const result = await this.authService.login(dto);
+      return {
+        success: true,
+        ...result,
+      };
+    } catch (error) {
+      const status = error.status || HttpStatus.UNAUTHORIZED;
+      const message = error.message || 'Invalid email or password';
+
+      throw new HttpException(
+        {
+          success: false,
+          message: message,
+          statusCode: status,
+        },
+        status,
+      );
+    }
   }
 
   @Post('verify-otp')
@@ -50,13 +68,14 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ) {
     const result = await this.authService.verifyOtp(dto);
-
     if (result.accessToken) {
       res.cookie('access_token', result.accessToken, this.getCookieOptions());
+      return {
+        ...result,
+        accessToken: result.accessToken,
+      };
     }
-
-    const { accessToken, ...responseData } = result;
-    return responseData;
+    return result;
   }
 
   @Post('resend-otp')
@@ -91,6 +110,9 @@ export class AuthController {
     @Request() req,
     @Body() dto: { currentPassword: string; newPassword: string },
   ) {
+    if (!req.user || !req.user.id) {
+      throw new UnauthorizedException('User not authenticated');
+    }
     return await this.authService.changePassword(
       req.user.id,
       dto.currentPassword,
@@ -104,6 +126,9 @@ export class AuthController {
     @Request() req,
     @Body() dto: { name: string; email: string },
   ) {
+    if (!req.user || !req.user.id) {
+      throw new UnauthorizedException('User not authenticated');
+    }
     return await this.authService.updateProfile(
       req.user.id,
       dto.name,
@@ -111,54 +136,52 @@ export class AuthController {
     );
   }
 
-  // ✅ **الإصلاح**: لا تستخدم JwtAuthGuard هنا
-  // استخدم دالة مخصصة للتحقق من التوكن بشكل صامت
   @Get('me')
   async getProfile(@Request() req, @Res({ passthrough: true }) res: Response) {
     try {
-      // ✅ التحقق من التوكن في الـ cookies
-      const token = req.cookies?.access_token;
-
+      const authHeader = req.headers.authorization;
+      let token = null;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        token = authHeader.substring(7);
+      }
       if (!token) {
-        // ✅ لا تطبع أي شيء، فقط ارجع null
+        token = req.cookies?.access_token;
+      }
+      if (!token) {
         return { user: null };
       }
-
-      // ✅ التحقق من صحة التوكن باستخدام AuthService
       const user = await this.authService.validateToken(token);
-
       if (!user) {
-        // ✅ التوكن غير صالح - احذف الكوكي
         res.clearCookie('access_token', {
           ...this.getCookieOptions(),
           maxAge: 0,
         });
         return { user: null };
       }
-
-      // ✅ المستخدم موجود
       return { user };
     } catch (error) {
-      // ✅ في حالة الخطأ، ارجع null بدون طباعة أي شيء
       return { user: null };
     }
   }
 
-  // ✅ نسخة POST لنفس الدالة (للتوافق مع بعض الإعدادات)
   @Post('me')
   async getProfilePost(
     @Request() req,
     @Res({ passthrough: true }) res: Response,
   ) {
     try {
-      const token = req.cookies?.access_token;
-
+      const authHeader = req.headers.authorization;
+      let token = null;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        token = authHeader.substring(7);
+      }
+      if (!token) {
+        token = req.cookies?.access_token;
+      }
       if (!token) {
         return { user: null };
       }
-
       const user = await this.authService.validateToken(token);
-
       if (!user) {
         res.clearCookie('access_token', {
           ...this.getCookieOptions(),
@@ -166,7 +189,6 @@ export class AuthController {
         });
         return { user: null };
       }
-
       return { user };
     } catch {
       return { user: null };
@@ -179,23 +201,32 @@ export class AuthController {
       ...this.getCookieOptions(),
       maxAge: 0,
     });
-    return { message: 'Logged out successfully' };
+    res.clearCookie('access_token', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      path: '/',
+    });
+    return {
+      message: 'Logged out successfully',
+      success: true,
+    };
   }
 
-  // ✅ تجديد الـ Token
   @UseGuards(JwtAuthGuard)
   @Post('refresh')
   async refreshToken(
     @Request() req,
     @Res({ passthrough: true }) res: Response,
   ) {
+    if (!req.user || !req.user.id) {
+      throw new UnauthorizedException('User not authenticated');
+    }
     const userId = req.user.id;
     const result = await this.authService.refreshToken(userId);
-
     if (result.accessToken) {
       res.cookie('access_token', result.accessToken, this.getCookieOptions());
     }
-
     return result;
   }
 }

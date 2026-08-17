@@ -258,3 +258,28 @@ Check out the **ScanLens Frontend** here:
 ---
 
 **Last Updated:** August 2026
+
+
+
+
+===========
+DATABASE_URL="postgresql://neondb_owner:npg_dqp1og7EclfL@ep-autumn-hall-as8770r0-pooler.c-4.eu-central-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+JWT_SECRET="eslam321"
+PORT=4000
+DIRECT_URL="postgresql://neondb_owner:npg_dqp1og7EclfL@ep-autumn-hall-as8770r0.c-4.eu-central-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+
+CLIENT_URL
+GEMINI_API_KEY="AQ.Ab8RN6IjTo_2gnRx0mZjQ6z91s2uEM7LcEivrQ-qXbQdF9EYlg"
+RESEND_API_KEY="re_duAfdtMo_5XM9iLb9BpKkhZAEdq8nFehW"
+
+REDIS_URL="rediss://default:gQAAAAAAAWlSAAIgcDJmNjZkMjU1OGI1Zjk0MjZlOTFlZTZkOGVjN2Q0M2I4MA@humane-fly-92498.upstash.io:6379"
+NODE_ENV=development
+xgzd sate nqxj tfjv
+
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=hdayaaslam34@gmail.com
+SMTP_PASS=xgzdsatenqxjtfjv
+MAIL_FROM="ScanLens <hdayaaslam34@gmail.com>"
+
+=======================

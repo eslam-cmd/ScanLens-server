@@ -27,13 +27,15 @@ export class AuthService {
   }
 
   // ✅ التسجيل مع إضافة role
+  // server/src/auth/auth.service.ts
+
   async register(dto: RegisterDto) {
     const existingUser = await this.prisma.user.findUnique({
       where: { email: dto.email },
     });
 
     if (existingUser) {
-      throw new ConflictException('Email is already registered');
+      throw new ConflictException('البريد الإلكتروني مسجل مسبقاً');
     }
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
@@ -62,50 +64,85 @@ export class AuthService {
       },
     });
 
+    console.log('📧 [DEBUG] Register - Sending OTP to:', user.email);
     await this.mailService.sendVerificationOtp(user.email, otp);
 
     return {
-      message: 'User registered successfully. Verification OTP sent to email.',
+      message:
+        'تم إنشاء الحساب بنجاح. تم إرسال رمز التحقق إلى بريدك الإلكتروني.',
       email: user.email,
       requiresVerification: true,
     };
   }
 
+  // server/src/auth/auth.service.ts
+
   async login(dto: LoginDto) {
+    console.log('🔍 [DEBUG] Login attempt with email:', dto.email);
+
+    // ✅ 1. التحقق من وجود المستخدم
     const user = await this.prisma.user.findUnique({
       where: { email: dto.email },
     });
 
     if (!user) {
-      throw new UnauthorizedException('Invalid email or password');
+      console.log('❌ [DEBUG] User not found:', dto.email);
+      throw new UnauthorizedException(
+        '❌ البريد الإلكتروني غير مسجل. يرجى التسجيل أولاً',
+      );
     }
 
+    console.log('✅ [DEBUG] User found:', user.email);
+
+    // ✅ 2. التحقق من كلمة المرور
     const isPasswordValid = await bcrypt.compare(
       dto.password,
       user.passwordHash,
     );
-
     if (!isPasswordValid) {
-      throw new UnauthorizedException('Invalid email or password');
+      throw new UnauthorizedException('❌ كلمة المرور غير صحيحة');
     }
 
-    const otp = this.generateOtp();
-    const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
+    // ✅ 3. التحقق من حالة التفعيل أولاً
+    if (!user.isVerified) {
+      // إنشاء OTP جديد
+      const otp = this.generateOtp();
+      const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data: {
-        verificationCode: otp,
-        verificationExpires: otpExpires,
-      },
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          verificationCode: otp,
+          verificationExpires: otpExpires,
+        },
+      });
+
+      console.log('📧 [DEBUG] Login - Sending OTP to:', user.email);
+      await this.mailService.sendVerificationOtp(user.email, otp);
+
+      return {
+        requiresVerification: true,
+        email: user.email,
+        message: 'الحساب غير مفعّل. تم إرسال رمز التحقق إلى بريدك الإلكتروني.',
+      };
+    }
+
+    // ✅ 4. إنشاء التوكن للمستخدم المفعّل
+    const token = this.jwtService.sign({
+      id: user.id,
+      email: user.email,
+      role: user.role,
     });
 
-    await this.mailService.sendVerificationOtp(user.email, otp);
-
     return {
-      message: 'Credentials verified. OTP sent to your email.',
-      email: user.email,
-      requiresVerification: true,
+      accessToken: token,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+      },
+      message: 'تم تسجيل الدخول بنجاح',
     };
   }
 
@@ -159,6 +196,9 @@ export class AuthService {
   }
 
   async resendOtp(email: string) {
+    console.log('🔍 [DEBUG] Resend OTP for email:', email);
+
+    // ✅ التحقق من وجود المستخدم
     const user = await this.prisma.user.findUnique({ where: { email } });
 
     if (!user) {
@@ -180,6 +220,7 @@ export class AuthService {
       },
     });
 
+    console.log('📧 [DEBUG] Resend - Sending OTP to:', user.email);
     await this.mailService.sendVerificationOtp(user.email, otp);
 
     return { message: 'A new verification code has been sent to your email.' };
@@ -187,6 +228,9 @@ export class AuthService {
 
   // ✅ 1. طلب إعادة تعيين كلمة المرور
   async forgotPassword(email: string) {
+    console.log('🔍 [DEBUG] Forgot password for email:', email);
+
+    // ✅ التحقق من وجود المستخدم
     const user = await this.prisma.user.findUnique({ where: { email } });
 
     if (!user) {
@@ -204,6 +248,7 @@ export class AuthService {
       },
     });
 
+    console.log('📧 [DEBUG] Forgot password - Sending OTP to:', user.email);
     await this.mailService.sendResetPasswordOtp(user.email, resetToken);
 
     return {
@@ -417,16 +462,15 @@ export class AuthService {
       { expiresIn: expiresIn as any },
     );
   }
+
   async validateToken(token: string): Promise<any | null> {
     try {
-      // ✅ التحقق من صحة التوكن
       const payload = this.jwtService.verify(token);
 
       if (!payload || !payload.sub) {
         return null;
       }
 
-      // ✅ جلب المستخدم من قاعدة البيانات
       const user = await this.prisma.user.findUnique({
         where: { id: payload.sub },
         select: {
@@ -442,7 +486,6 @@ export class AuthService {
 
       return user;
     } catch (error) {
-      // ✅ التوكن غير صالح
       return null;
     }
   }
