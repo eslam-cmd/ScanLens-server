@@ -258,7 +258,3 @@ Check out the **ScanLens Frontend** here:
 ---
 
 **Last Updated:** August 2026
-
-
-
-
