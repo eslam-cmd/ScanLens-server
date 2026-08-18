@@ -13,6 +13,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { JwtService } from '@nestjs/jwt';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
@@ -20,8 +21,12 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
 
 @Controller('auth')
 export class AuthController {
-  constructor(private authService: AuthService) {}
+  constructor(
+    private authService: AuthService,
+    private jwtService: JwtService,
+  ) {}
 
+  // ✅ تأكد من وجود هذه الدالة
   private getCookieOptions() {
     const isProduction = process.env.NODE_ENV === 'production';
     return {
@@ -38,7 +43,6 @@ export class AuthController {
     return await this.authService.register(dto);
   }
 
-  // ✅ دالة login المعدلة
   @Post('login')
   async login(
     @Body() dto: LoginDto,
@@ -47,10 +51,7 @@ export class AuthController {
     try {
       const result = await this.authService.login(dto);
 
-      // ✅ إذا في accessToken (يعني مستخدم مفعّل)، خزنه بالكوكي
-      if (result.accessToken) {
-        res.cookie('access_token', result.accessToken, this.getCookieOptions());
-      }
+      console.log('🔍 [DEBUG] Login result:', result);
 
       return {
         success: true,
@@ -204,38 +205,43 @@ export class AuthController {
     }
   }
 
+  // server/src/auth/auth.controller.ts
+
   @Post('logout')
-  logout(@Res({ passthrough: true }) res: Response) {
+  async logout(
+    @Request() req,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    try {
+      // ✅ الحصول على التوكن من الكوكي أو الـ Header
+      const token = req.cookies?.access_token || req.headers.authorization?.split(' ')[1];
+
+      if (token) {
+        try {
+          // ✅ فك التوكن للحصول على userId
+          const payload = this.jwtService.verify(token);
+          if (payload && payload.id) {
+            // ✅ تغيير isVerified إلى false في قاعدة البيانات
+            await this.authService.setUserUnverified(payload.id);
+            console.log('🔓 [DEBUG] User unverified after logout:', payload.email);
+          }
+        } catch (error) {
+          console.log('⚠️ [DEBUG] Token verification failed:', error.message);
+        }
+      }
+    } catch (error) {
+      console.log('⚠️ [DEBUG] Logout error:', error.message);
+    }
+
+    // ✅ حذف الكوكيز
     res.clearCookie('access_token', {
       ...this.getCookieOptions(),
       maxAge: 0,
     });
-    res.clearCookie('access_token', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      path: '/',
-    });
+
     return {
       message: 'Logged out successfully',
       success: true,
     };
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @Post('refresh')
-  async refreshToken(
-    @Request() req,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    if (!req.user || !req.user.id) {
-      throw new UnauthorizedException('User not authenticated');
-    }
-    const userId = req.user.id;
-    const result = await this.authService.refreshToken(userId);
-    if (result.accessToken) {
-      res.cookie('access_token', result.accessToken, this.getCookieOptions());
-    }
-    return result;
   }
 }

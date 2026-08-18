@@ -1,4 +1,5 @@
 // server/src/plans/plans.config.ts
+
 export const PLANS = {
   free: {
     id: 'free',
@@ -6,12 +7,13 @@ export const PLANS = {
     price: 0,
     priceYearly: 0,
     description: 'Perfect for getting started with basic security scanning',
-    scansPerDay: 5,
+    scansPerDay: 10,                    // ✅ 10 فحوصات يومياً
+    deepScanLimit: 5,                   // ✅ 5 Deep Scans يومياً
     concurrentScans: 1,
     historyRetentionDays: 7,
     aiFixesEnabled: false,
     exportReportsEnabled: true,
-    deepScanEnabled: false,
+    deepScanEnabled: true,              // ✅ تفعيل Deep Scan للـ Free
     prioritySupport: false,
     customRulesEnabled: false,
     maxTeamMembers: 1,
@@ -34,7 +36,8 @@ export const PLANS = {
     price: 29,
     priceYearly: 290,
     description: 'Ideal for professional developers and small teams',
-    scansPerDay: 100,
+    scansPerDay: 50,                    // ✅ 50 فحص يومياً
+    deepScanLimit: Infinity,            // ✅ غير محدود
     concurrentScans: 5,
     historyRetentionDays: 90,
     aiFixesEnabled: true,
@@ -62,7 +65,8 @@ export const PLANS = {
     price: 79,
     priceYearly: 790,
     description: 'For enterprises and power users needing maximum capabilities',
-    scansPerDay: Infinity,
+    scansPerDay: Infinity,              // ✅ غير محدود
+    deepScanLimit: Infinity,            // ✅ غير محدود
     concurrentScans: Infinity,
     historyRetentionDays: 365,
     aiFixesEnabled: true,

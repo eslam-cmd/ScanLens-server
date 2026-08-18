@@ -27,8 +27,6 @@ export class AuthService {
   }
 
   // ✅ التسجيل مع إضافة role
-  // server/src/auth/auth.service.ts
-
   async register(dto: RegisterDto) {
     const existingUser = await this.prisma.user.findUnique({
       where: { email: dto.email },
@@ -75,74 +73,43 @@ export class AuthService {
     };
   }
 
-  // server/src/auth/auth.service.ts
-
+  // ✅ تسجيل الدخول - دائماً يطلب OTP
   async login(dto: LoginDto) {
     console.log('🔍 [DEBUG] Login attempt with email:', dto.email);
 
-    // ✅ 1. التحقق من وجود المستخدم
     const user = await this.prisma.user.findUnique({
       where: { email: dto.email },
     });
 
     if (!user) {
-      console.log('❌ [DEBUG] User not found:', dto.email);
-      throw new UnauthorizedException(
-        '❌ البريد الإلكتروني غير مسجل. يرجى التسجيل أولاً',
-      );
+      throw new UnauthorizedException('The email address is not registered. Please register first ❌');
     }
 
-    console.log('✅ [DEBUG] User found:', user.email);
-
-    // ✅ 2. التحقق من كلمة المرور
-    const isPasswordValid = await bcrypt.compare(
-      dto.password,
-      user.passwordHash,
-    );
+    const isPasswordValid = await bcrypt.compare(dto.password, user.passwordHash);
     if (!isPasswordValid) {
-      throw new UnauthorizedException('❌ كلمة المرور غير صحيحة');
+      throw new UnauthorizedException('The password or email is incorrect ❌ ');
     }
 
-    // ✅ 3. التحقق من حالة التفعيل أولاً
-    if (!user.isVerified) {
-      // إنشاء OTP جديد
-      const otp = this.generateOtp();
-      const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
+    // ✅ دائماً نرسل OTP ونطلب التحقق
+    const otp = this.generateOtp();
+    const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
-      await this.prisma.user.update({
-        where: { id: user.id },
-        data: {
-          verificationCode: otp,
-          verificationExpires: otpExpires,
-        },
-      });
-
-      console.log('📧 [DEBUG] Login - Sending OTP to:', user.email);
-      await this.mailService.sendVerificationOtp(user.email, otp);
-
-      return {
-        requiresVerification: true,
-        email: user.email,
-        message: 'الحساب غير مفعّل. تم إرسال رمز التحقق إلى بريدك الإلكتروني.',
-      };
-    }
-
-    // ✅ 4. إنشاء التوكن للمستخدم المفعّل
-    const token = this.jwtService.sign({
-      id: user.id,
-      email: user.email,
-      role: user.role,
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        verificationCode: otp,
+        verificationExpires: otpExpires,
+        isVerified: false, // ✅ دائماً false
+      },
     });
 
+    console.log('📧 [DEBUG] Login - Sending OTP to:', user.email);
+    await this.mailService.sendVerificationOtp(user.email, otp);
+
     return {
-      accessToken: token,
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-      },
-      message: 'تم تسجيل الدخول بنجاح',
+      requiresVerification: true,
+      email: user.email,
+      message: 'تم إرسال رمز التحقق إلى بريدك الإلكتروني.',
     };
   }
 
@@ -195,10 +162,10 @@ export class AuthService {
     };
   }
 
+  // ✅ إعادة إرسال OTP
   async resendOtp(email: string) {
     console.log('🔍 [DEBUG] Resend OTP for email:', email);
 
-    // ✅ التحقق من وجود المستخدم
     const user = await this.prisma.user.findUnique({ where: { email } });
 
     if (!user) {
@@ -230,7 +197,6 @@ export class AuthService {
   async forgotPassword(email: string) {
     console.log('🔍 [DEBUG] Forgot password for email:', email);
 
-    // ✅ التحقق من وجود المستخدم
     const user = await this.prisma.user.findUnique({ where: { email } });
 
     if (!user) {
@@ -488,5 +454,16 @@ export class AuthService {
     } catch (error) {
       return null;
     }
+  }
+  async setUserUnverified(userId: string) {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        isVerified: false,
+        verificationCode: null,
+        verificationExpires: null,
+      },
+    });
+    console.log('🔓 [DEBUG] User unverified:', userId);
   }
 }

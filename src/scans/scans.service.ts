@@ -39,7 +39,9 @@ export class ScansService {
     });
   }
 
-  // ✅ 1. التحقق من صحة الـ URL
+  // ============================================================
+  // ✅ 1. دالة التحقق من صحة الـ URL
+  // ============================================================
   private validateUrl(url: string): {
     valid: boolean;
     formattedUrl: string;
@@ -47,14 +49,9 @@ export class ScansService {
   } {
     try {
       let formattedUrl = url.trim();
-
-      // ✅ إزالة المسافات الزائدة
       formattedUrl = formattedUrl.replace(/\s+/g, '');
-
-      // ✅ إزالة الـ // المكررة في البداية
       formattedUrl = formattedUrl.replace(/^\/\//, '');
 
-      // ✅ إضافة البروتوكول إذا كان مفقوداً
       if (
         !formattedUrl.startsWith('http://') &&
         !formattedUrl.startsWith('https://')
@@ -62,10 +59,8 @@ export class ScansService {
         formattedUrl = `https://${formattedUrl}`;
       }
 
-      // ✅ التحقق من صحة الـ URL
       const parsedUrl = new URL(formattedUrl);
 
-      // ✅ التحقق من وجود hostname صالح
       if (!parsedUrl.hostname || parsedUrl.hostname.length < 3) {
         return {
           valid: false,
@@ -74,12 +69,10 @@ export class ScansService {
         };
       }
 
-      // ✅ التحقق من عدم وجود // مكررة
       if (
         formattedUrl.includes('//') &&
         formattedUrl.indexOf('//') !== formattedUrl.indexOf('://') + 1
       ) {
-        // إصلاح الـ // المكررة
         formattedUrl = formattedUrl.replace(/([^:]\/)\/+/g, '$1');
       }
 
@@ -93,7 +86,85 @@ export class ScansService {
     }
   }
 
-  // ✅ 2. التحقق من صلاحية المستخدم
+  // ============================================================
+  // ✅ 2. دوال حساب الاستخدام اليومي (NEW)
+  // ============================================================
+
+  /**
+   * ✅ الحصول على عدد الفحوصات اليومية للمستخدم
+   */
+  async getTodayScanCount(userId: string): Promise<number> {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const count = await this.prisma.usageLog.count({
+      where: {
+        userId,
+        action: {
+          in: ['SCAN', 'DEEP_SCAN'],
+        },
+        createdAt: { gte: today },
+      },
+    });
+
+    return count;
+  }
+
+  /**
+   * ✅ الحصول على عدد Deep Scans اليومية للمستخدم
+   */
+  async getTodayDeepScanCount(userId: string): Promise<number> {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const count = await this.prisma.usageLog.count({
+      where: {
+        userId,
+        action: 'DEEP_SCAN',
+        createdAt: { gte: today },
+      },
+    });
+
+    return count;
+  }
+
+  /**
+   * ✅ إعادة تعيين الاستخدام اليومي (تُشغل تلقائياً كل يوم عند منتصف الليل)
+   */
+  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  async resetDailyUsage() {
+    this.logger.log('🔄 [Cron] Resetting daily usage counts...');
+
+    try {
+      // ✅ حذف سجلات الاستخدام الأقدم من يوم واحد
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      yesterday.setHours(0, 0, 0, 0);
+
+      const deleted = await this.prisma.usageLog.deleteMany({
+        where: {
+          createdAt: {
+            lt: yesterday,
+          },
+        },
+      });
+
+      this.logger.log(
+        `✅ [Cron] Reset daily usage: ${deleted.count} records deleted`,
+      );
+      return { deleted: deleted.count };
+    } catch (error) {
+      this.logger.error('❌ [Cron] Failed to reset daily usage:', error);
+      throw error;
+    }
+  }
+
+  // ============================================================
+  // ✅ 3. التحقق من صلاحية المستخدم (معدلة)
+  // ============================================================
+
+  // server/src/scans/scans.service.ts
+
   private async checkUserCapability(
     userId: string | undefined,
     isDeepScan: boolean,
@@ -122,45 +193,23 @@ export class ScansService {
       throw new ForbiddenException('Invalid plan');
     }
 
-    // ✅ Deep Scan متاح للجميع (Free, Pro, Extra)
+    // ✅ الحصول على عدد الفحوصات اليومية من قاعدة البيانات
+    const todayScans = await this.getTodayScanCount(userId);
+    const todayDeepScans = await this.getTodayDeepScanCount(userId);
+
+    // ✅ التحقق من حدود Deep Scan (استخدم deepScanLimit)
     if (isDeepScan) {
-      // ✅ التحقق من عدد Deep Scans اليومية للـ Free
-      if (planId === 'free') {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+      const maxDeepScans = plan.deepScanLimit || 5;
 
-        const deepScansToday = await this.prisma.usageLog.count({
-          where: {
-            userId,
-            action: 'DEEP_SCAN',
-            createdAt: { gte: today },
-          },
-        });
-
-        const maxDeepScans = 5;
-        if (deepScansToday >= maxDeepScans) {
-          throw new ForbiddenException(
-            `You have reached your daily Deep Scan limit of ${maxDeepScans}. Upgrade to Pro for unlimited Deep Scans.`,
-          );
-        }
+      if (todayDeepScans >= maxDeepScans) {
+        throw new ForbiddenException(
+          `You have reached your daily Deep Scan limit of ${maxDeepScans}. Upgrade to Pro for unlimited Deep Scans.`,
+        );
       }
     }
 
-    // ✅ حدود الفحوصات اليومية
+    // ✅ التحقق من حدود الفحوصات العادية
     if (!plan.unlimitedScans) {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-
-      const todayScans = await this.prisma.usageLog.count({
-        where: {
-          userId,
-          action: {
-            in: ['SCAN', 'DEEP_SCAN'],
-          },
-          createdAt: { gte: today },
-        },
-      });
-
       if (todayScans >= plan.scansPerDay) {
         throw new ForbiddenException(
           `You have reached your daily scan limit of ${plan.scansPerDay} scans. Upgrade to Pro for unlimited scans.`,
@@ -168,10 +217,35 @@ export class ScansService {
       }
     }
 
-    return { allowed: true, plan: planId, isGuest: false };
+    // ✅ حساب المتبقي
+    const remainingScans = plan.unlimitedScans
+      ? Infinity
+      : plan.scansPerDay - todayScans;
+
+    const remainingDeepScans = plan.unlimitedScans
+      ? Infinity
+      : (plan.deepScanLimit || 5) - todayDeepScans;
+
+    return {
+      allowed: true,
+      plan: planId,
+      isGuest: false,
+      todayScans,
+      remainingScans,
+      todayDeepScans,
+      remainingDeepScans,
+      limits: {
+        scansPerDay: plan.scansPerDay,
+        deepScanLimit: plan.deepScanLimit || 5,
+        unlimitedScans: plan.unlimitedScans,
+      },
+    };
   }
 
-  // ✅ 3. فحص SSL/TLS
+  // ============================================================
+  // ✅ 4. فحص SSL/TLS
+  // ============================================================
+
   private async inspectSsl(targetUrl: string): Promise<any> {
     return new Promise((resolve) => {
       try {
@@ -223,7 +297,10 @@ export class ScansService {
     });
   }
 
-  // ✅ 4. الفحص الرئيسي
+  // ============================================================
+  // ✅ 5. الفحص الرئيسي (معدل)
+  // ============================================================
+
   async scanUrl(url: string, userId?: string, isDeepScan: boolean = false) {
     // ✅ التحقق من صحة الـ URL أولاً
     const urlValidation = this.validateUrl(url);
@@ -246,6 +323,8 @@ export class ScansService {
     this.logger.log(`🔍 Formatted URL: ${formattedUrl}`);
     this.logger.log(`🔍 User Plan: ${capability.plan}`);
     this.logger.log(`🔍 Is Deep Scan: ${isDeepScan}`);
+    this.logger.log(`📊 Today scans: ${capability.todayScans || 0}`);
+    this.logger.log(`📊 Remaining scans: ${capability.remainingScans || 0}`);
 
     try {
       // ✅ تنفيذ الفحص
@@ -436,7 +515,7 @@ export class ScansService {
           });
           createdScanId = newScan.id;
 
-          // ✅ تسجيل الاستخدام
+          // ✅ تسجيل الاستخدام (هذا سيبقى في قاعدة البيانات حتى يتم حذفه يومياً)
           await this.prisma.usageLog.create({
             data: {
               userId,
@@ -456,7 +535,7 @@ export class ScansService {
         }
       }
 
-      // ✅ النتيجة النهائية
+      // ✅ النتيجة النهائية مع معلومات الاستخدام اليومي
       const result = {
         id: createdScanId,
         url: formattedUrl,
@@ -475,14 +554,16 @@ export class ScansService {
         comparison,
         plan: capability.plan,
         isGuest: capability.isGuest,
-        deepScanLimit:
-          capability.plan === 'free'
-            ? {
-                max: 5,
-                used: 0,
-                remaining: 5,
-              }
-            : undefined,
+        // ✅ إضافة معلومات الاستخدام اليومي
+        dailyUsage: {
+          scansToday: capability.todayScans || 0,
+          remainingScans: capability.remainingScans,
+          deepScansToday: capability.todayDeepScans || 0,
+          remainingDeepScans: capability.remainingDeepScans,
+          deepScanLimit: capability.limits?.deepScanLimit || 5,
+          scansPerDay: capability.limits?.scansPerDay || 10,
+          unlimitedScans: capability.limits?.unlimitedScans || false,
+        },
       };
 
       this.logger.log(`✅ Scan completed successfully for: ${formattedUrl}`);
@@ -498,7 +579,10 @@ export class ScansService {
     }
   }
 
-  // ✅ دالة مساعدة لتوليد اقتراحات الإصلاح
+  // ============================================================
+  // ✅ باقي الدوال (لم تتغير)
+  // ============================================================
+
   private getRemediationSuggestion(headerName: string): string {
     const suggestions: Record<string, string> = {
       'content-security-policy':
@@ -519,7 +603,6 @@ export class ScansService {
     return suggestions[headerName] || 'Add the missing security header.';
   }
 
-  // ✅ 5. توليد AI Fix
   async generateAiFix(
     vulnerabilityTitle: string,
     context: string,
@@ -535,7 +618,7 @@ export class ScansService {
       const response = await this.ai.models.generateContent({
         model: 'gemini-2.5-flash',
         contents: `You are an expert Cybersecurity Engineer. Provide a concise, actionable remediation guide and code snippet to fix the following security vulnerability:
-        
+
 Vulnerability: ${vulnerabilityTitle}
 Context: ${context}
 
@@ -552,7 +635,6 @@ Format your output in Markdown with:
     }
   }
 
-  // ✅ 6. جلب تاريخ الفحوصات
   async getUserHistory(userId: string) {
     const websites = await this.prisma.website.findMany({
       where: { userId },
@@ -579,7 +661,6 @@ Format your output in Markdown with:
     });
   }
 
-  // ✅ 7. حذف فحص
   async deleteScan(scanId: string, userId: string) {
     const websites = await this.prisma.website.findMany({
       where: { userId },
@@ -606,7 +687,6 @@ Format your output in Markdown with:
     return this.prisma.scan.delete({ where: { id: scanId } });
   }
 
-  // ✅ 8. جلب فحص معين
   async getScanById(scanId: string, userId?: string) {
     let whereClause: any = { id: scanId };
 
@@ -641,7 +721,6 @@ Format your output in Markdown with:
     return scan;
   }
 
-  // ✅ 9. توليد تقرير PDF
   async generatePdfReport(scanId: string, userId?: string): Promise<Buffer> {
     const scan = await this.getScanById(scanId, userId);
 
@@ -653,7 +732,6 @@ Format your output in Markdown with:
       doc.on('end', () => resolve(Buffer.concat(buffers)));
       doc.on('error', (err) => reject(err));
 
-      // عنوان التقرير
       doc
         .fontSize(24)
         .font('Helvetica-Bold')
@@ -666,7 +744,6 @@ Format your output in Markdown with:
         .text('Security Audit Report', { align: 'center' });
       doc.moveDown(0.5);
 
-      // خط فاصل
       doc
         .moveTo(50, doc.y)
         .lineTo(550, doc.y)
@@ -675,7 +752,6 @@ Format your output in Markdown with:
         .stroke();
       doc.moveDown(0.5);
 
-      // معلومات التقرير
       const websiteUrl = (scan as any).website?.url || 'N/A';
       const domain = (scan as any).website?.domain || 'N/A';
 
@@ -708,7 +784,6 @@ Format your output in Markdown with:
 
       doc.moveDown(0.5);
 
-      // خط فاصل
       doc
         .moveTo(50, doc.y)
         .lineTo(550, doc.y)
@@ -717,7 +792,6 @@ Format your output in Markdown with:
         .stroke();
       doc.moveDown(0.5);
 
-      // قسم النتيجة
       doc
         .fontSize(14)
         .font('Helvetica-Bold')
@@ -725,7 +799,6 @@ Format your output in Markdown with:
         .text('Security Score', { underline: true });
       doc.moveDown(0.3);
 
-      // شريط النتيجة
       const scoreWidth = (scan.score / 100) * 400;
       const scoreColor =
         scan.score >= 80 ? '#22c55e' : scan.score >= 50 ? '#f59e0b' : '#ef4444';
@@ -748,7 +821,6 @@ Format your output in Markdown with:
         .stroke();
       doc.moveDown(0.5);
 
-      // قسم الثغرات
       doc
         .fontSize(14)
         .font('Helvetica-Bold')
@@ -812,7 +884,6 @@ Format your output in Markdown with:
         .stroke();
       doc.moveDown(0.5);
 
-      // التذييل
       doc
         .fontSize(8)
         .font('Helvetica')
@@ -829,7 +900,6 @@ Format your output in Markdown with:
     });
   }
 
-  // ✅ 10. تصدير CSV
   async generateCsvReport(scanId: string, userId?: string): Promise<string> {
     const scan = await this.getScanById(scanId, userId);
     const vulnerabilities = (scan as any).vulnerabilities || [];
@@ -869,7 +939,6 @@ Format your output in Markdown with:
       .join('\n');
   }
 
-  // ✅ 11. جلب إحصائيات المستخدم
   async getUserStats(userId: string) {
     const websites = await this.prisma.website.findMany({
       where: { userId },
@@ -915,7 +984,6 @@ Format your output in Markdown with:
     };
   }
 
-  // ✅ 12. جلب الفحوصات الأخيرة
   async getRecentScans(userId: string, limit: number = 10) {
     const websites = await this.prisma.website.findMany({
       where: { userId },
@@ -953,7 +1021,6 @@ Format your output in Markdown with:
     });
   }
 
-  // ✅ 13. إعادة فحص موقع
   async rescanWebsite(
     websiteId: string,
     userId: string,
@@ -970,7 +1037,6 @@ Format your output in Markdown with:
     return this.scanUrl(website.url, userId, isDeepScan);
   }
 
-  // ✅ 14. جلب جميع المواقع
   async getUserWebsites(userId: string) {
     return this.prisma.website.findMany({
       where: { userId },
@@ -986,7 +1052,6 @@ Format your output in Markdown with:
     });
   }
 
-  // ✅ 15. حذف موقع
   async deleteWebsite(websiteId: string, userId: string) {
     const website = await this.prisma.website.findFirst({
       where: { id: websiteId, userId },
@@ -1001,7 +1066,6 @@ Format your output in Markdown with:
     });
   }
 
-  // ✅ 16. جلب نشاطات المستخدم
   async getUserActivities(userId: string) {
     return this.prisma.usageLog.findMany({
       where: { userId },
