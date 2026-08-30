@@ -238,7 +238,7 @@ npm run test:cov    # View coverage report
 
 For detailed API documentation and endpoints, refer to:
 
-- API Swagger/OpenAPI documentation (if implemented)
+- API Swagger/Gemini documentation (if implemented)
 - Postman collection (if available)
 
 ## 🤝 Contributing
