@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "types": ["jest", "node"],
+    "typeRoots": ["./node_modules/@types"],
+    "esModuleInterop": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "target": "ES2023",
+    "skipLibCheck": true,
+    "strictNullChecks": true,
+    "baseUrl": "./"
+  },
+  "include": ["src/**/*.spec.ts", "src/**/*.ts"]
+}
