@@ -14,7 +14,7 @@ import { ScansModule } from '../scans/scans.module';
       connection: {
         host: 'localhost',
         port: 6379,
-        // password: 'your-password', // إذا كان هناك كلمة مرور
+       
       },
       // ✅ إعدادات افتراضية للـ Jobs
       defaultJobOptions: {

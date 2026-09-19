@@ -54,3 +54,19 @@ pids
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+
+# Compiled output
+/dist
+/node_modules
+/build
+
+# TypeScript compiled files (إذا كانت في src)
+*.js
+*.js.map
+*.d.ts
+
+# لكن استثنِ ملفات الإعدادات
+!jest.config.js
+!nest-cli.json
+!tsconfig.json

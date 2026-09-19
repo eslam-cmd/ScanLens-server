@@ -87,84 +87,265 @@ export class ScansService {
   }
 
   // ============================================================
-  // ✅ 2. دوال حساب الاستخدام اليومي (NEW)
+  // ✅ 2. نافذة الاستخدام (24 ساعة متجددة)
   // ============================================================
 
-  /**
-   * ✅ الحصول على عدد الفحوصات اليومية للمستخدم
-   */
-  async getTodayScanCount(userId: string): Promise<number> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+  async getUsageWindow(userId: string): Promise<{
+    windowStart: Date;
+    windowEnd: Date;
+    scansToday: number;
+    deepScansToday: number;
+  }> {
+    const now = new Date();
+    const WINDOW_MS = 24 * 60 * 60 * 1000;
 
-    const count = await this.prisma.usageLog.count({
+    const lastLog = await this.prisma.usageLog.findFirst({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+
+    if (!lastLog) {
+      const windowEnd = new Date(now.getTime() + WINDOW_MS);
+      return {
+        windowStart: now,
+        windowEnd,
+        scansToday: 0,
+        deepScansToday: 0,
+      };
+    }
+
+    const lastLogTime = lastLog.createdAt.getTime();
+    const nowMs = now.getTime();
+    const elapsed = nowMs - lastLogTime;
+    const windowsPassed = Math.floor(elapsed / WINDOW_MS);
+
+    const windowStartMs = lastLogTime + windowsPassed * WINDOW_MS;
+    const windowEndMs = windowStartMs + WINDOW_MS;
+
+    if (nowMs >= windowEndMs) {
+      const newWindowEnd = new Date(nowMs + WINDOW_MS);
+      return {
+        windowStart: now,
+        windowEnd: newWindowEnd,
+        scansToday: 0,
+        deepScansToday: 0,
+      };
+    }
+
+    const windowStart = new Date(windowStartMs);
+    const windowEnd = new Date(windowEndMs);
+
+    const scansToday = await this.prisma.usageLog.count({
       where: {
         userId,
-        action: {
-          in: ['SCAN', 'DEEP_SCAN'],
-        },
-        createdAt: { gte: today },
+        action: { in: ['SCAN', 'DEEP_SCAN'] },
+        createdAt: { gte: windowStart, lt: windowEnd },
       },
     });
 
-    return count;
-  }
-
-  /**
-   * ✅ الحصول على عدد Deep Scans اليومية للمستخدم
-   */
-  async getTodayDeepScanCount(userId: string): Promise<number> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const count = await this.prisma.usageLog.count({
+    const deepScansToday = await this.prisma.usageLog.count({
       where: {
         userId,
         action: 'DEEP_SCAN',
-        createdAt: { gte: today },
+        createdAt: { gte: windowStart, lt: windowEnd },
       },
     });
 
-    return count;
+    return { windowStart, windowEnd, scansToday, deepScansToday };
+  }
+
+  async getTodayScanCount(userId: string): Promise<number> {
+    const window = await this.getUsageWindow(userId);
+    return window.scansToday;
+  }
+
+  async getTodayDeepScanCount(userId: string): Promise<number> {
+    const window = await this.getUsageWindow(userId);
+    return window.deepScansToday;
   }
 
   /**
-   * ✅ إعادة تعيين الاستخدام اليومي (تُشغل تلقائياً كل يوم عند منتصف الليل)
+   * ✅ Cron: تنظيف سجلات الاستخدام الأقدم من 7 أيام
    */
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
   async resetDailyUsage() {
-    this.logger.log('🔄 [Cron] Resetting daily usage counts...');
+    this.logger.log('🔄 [Cron] Cleaning up old usage logs...');
 
     try {
-      // ✅ حذف سجلات الاستخدام الأقدم من يوم واحد
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      yesterday.setHours(0, 0, 0, 0);
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - 7);
 
       const deleted = await this.prisma.usageLog.deleteMany({
-        where: {
-          createdAt: {
-            lt: yesterday,
-          },
-        },
+        where: { createdAt: { lt: cutoff } },
       });
 
       this.logger.log(
-        `✅ [Cron] Reset daily usage: ${deleted.count} records deleted`,
+        `✅ [Cron] Cleanup complete: ${deleted.count} old records deleted`,
       );
       return { deleted: deleted.count };
     } catch (error) {
-      this.logger.error('❌ [Cron] Failed to reset daily usage:', error);
+      this.logger.error('❌ [Cron] Failed to clean old usage logs:', error);
       throw error;
     }
   }
 
   // ============================================================
-  // ✅ 3. التحقق من صلاحية المستخدم (معدلة)
+  // ✅ 3. حد التخزين الأقصى (maxStoredScans)
   // ============================================================
 
-  // server/src/scans/scans.service.ts
+  /**
+   * ✅ التحقق من عدد الفحوصات المخزنة حالياً
+   */
+  async checkStorageLimit(userId: string): Promise<{
+    storedCount: number;
+    maxStored: number | typeof Infinity;
+    isAtLimit: boolean;
+    plan: string;
+    role: string;
+  }> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { plan: true, role: true },
+    });
 
+    if (!user) {
+      throw new ForbiddenException('User not found');
+    }
+
+    // ✅ الأدمن بلا حدود
+    if (user.role === 'admin') {
+      return {
+        storedCount: 0,
+        maxStored: Infinity,
+        isAtLimit: false,
+        plan: 'admin',
+        role: 'admin',
+      };
+    }
+
+    const planId = (user.plan as PlanId) || 'free';
+    const plan = PLANS[planId];
+
+    if (!plan) {
+      throw new ForbiddenException('Invalid plan');
+    }
+
+    const websites = await this.prisma.website.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+
+    const websiteIds = websites.map((w) => w.id);
+
+    const storedCount =
+      websiteIds.length === 0
+        ? 0
+        : await this.prisma.scan.count({
+            where: { websiteId: { in: websiteIds } },
+          });
+
+    const maxStored =
+      (plan as any).maxStoredScans ?? Infinity;
+    const isAtLimit = storedCount >= maxStored;
+
+    return {
+      storedCount,
+      maxStored,
+      isAtLimit,
+      plan: planId,
+      role: user.role,
+    };
+  }
+
+  /**
+   * ✅ حذف أقدم فحص للمستخدم (FIFO) لإفساح المجال
+   */
+  async deleteOldestScan(userId: string): Promise<boolean> {
+    const websites = await this.prisma.website.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+
+    const websiteIds = websites.map((w) => w.id);
+
+    if (websiteIds.length === 0) return false;
+
+    const oldestScan = await this.prisma.scan.findFirst({
+      where: { websiteId: { in: websiteIds } },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true },
+    });
+
+    if (!oldestScan) return false;
+
+    await this.prisma.scan.delete({
+      where: { id: oldestScan.id },
+    });
+
+    this.logger.log(
+      `🗑️ Deleted oldest scan ${oldestScan.id} for user ${userId} (storage limit)`,
+    );
+
+    return true;
+  }
+
+  /**
+   * ✅ تطبيق الحذف حسب مدة الحفظ للخطة
+   */
+  async enforceRetentionForUser(userId: string): Promise<{
+    deleted: number;
+    retentionDays: number | typeof Infinity;
+  }> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { plan: true, role: true },
+    });
+
+    if (!user) return { deleted: 0, retentionDays: Infinity };
+    if (user.role === 'admin') return { deleted: 0, retentionDays: Infinity };
+
+    const planId = (user.plan as PlanId) || 'free';
+    const plan = PLANS[planId];
+    const retentionDays = plan?.historyRetentionDays ?? 7;
+
+    if (retentionDays === Infinity) {
+      return { deleted: 0, retentionDays: Infinity };
+    }
+
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+
+    const websites = await this.prisma.website.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+
+    const websiteIds = websites.map((w) => w.id);
+
+    if (websiteIds.length === 0) {
+      return { deleted: 0, retentionDays };
+    }
+
+    const deleted = await this.prisma.scan.deleteMany({
+      where: {
+        websiteId: { in: websiteIds },
+        createdAt: { lt: cutoffDate },
+      },
+    });
+
+    if (deleted.count > 0) {
+      this.logger.log(
+        `🗑️ Retention cleanup: deleted ${deleted.count} scans for user ${userId} (retention: ${retentionDays}d)`,
+      );
+    }
+
+    return { deleted: deleted.count, retentionDays };
+  }
+
+  // ============================================================
+  // ✅ 4. التحقق من صلاحية الفحص اليومي
+  // ============================================================
   private async checkUserCapability(
     userId: string | undefined,
     isDeepScan: boolean,
@@ -183,7 +364,12 @@ export class ScansService {
     }
 
     if (user.role === 'admin') {
-      return { allowed: true, plan: 'admin', isGuest: false };
+      return {
+        allowed: true,
+        plan: 'admin',
+        isGuest: false,
+        windowEnd: null,
+      };
     }
 
     const planId = (user.plan as PlanId) || 'free';
@@ -193,59 +379,58 @@ export class ScansService {
       throw new ForbiddenException('Invalid plan');
     }
 
-    // ✅ الحصول على عدد الفحوصات اليومية من قاعدة البيانات
-    const todayScans = await this.getTodayScanCount(userId);
-    const todayDeepScans = await this.getTodayDeepScanCount(userId);
+    const window = await this.getUsageWindow(userId);
 
-    // ✅ التحقق من حدود Deep Scan (استخدم deepScanLimit)
+    // ✅ Deep Scan limit
     if (isDeepScan) {
-      const maxDeepScans = plan.deepScanLimit || 5;
-
-      if (todayDeepScans >= maxDeepScans) {
+      const maxDeepScans =
+        plan.deepScanLimit === Infinity ? Infinity : plan.deepScanLimit || 5;
+      if (maxDeepScans !== Infinity && window.deepScansToday >= maxDeepScans) {
         throw new ForbiddenException(
           `You have reached your daily Deep Scan limit of ${maxDeepScans}. Upgrade to Pro for unlimited Deep Scans.`,
         );
       }
     }
 
-    // ✅ التحقق من حدود الفحوصات العادية
+    // ✅ Scans per day limit
     if (!plan.unlimitedScans) {
-      if (todayScans >= plan.scansPerDay) {
+      if (window.scansToday >= plan.scansPerDay) {
         throw new ForbiddenException(
           `You have reached your daily scan limit of ${plan.scansPerDay} scans. Upgrade to Pro for unlimited scans.`,
         );
       }
     }
 
-    // ✅ حساب المتبقي
     const remainingScans = plan.unlimitedScans
       ? Infinity
-      : plan.scansPerDay - todayScans;
+      : plan.scansPerDay - window.scansToday;
 
     const remainingDeepScans = plan.unlimitedScans
       ? Infinity
-      : (plan.deepScanLimit || 5) - todayDeepScans;
+      : (plan.deepScanLimit === Infinity ? 999 : plan.deepScanLimit) -
+        window.deepScansToday;
 
     return {
       allowed: true,
       plan: planId,
       isGuest: false,
-      todayScans,
+      todayScans: window.scansToday,
       remainingScans,
-      todayDeepScans,
+      todayDeepScans: window.deepScansToday,
       remainingDeepScans,
+      windowEnd: window.windowEnd,
+      windowStart: window.windowStart,
       limits: {
         scansPerDay: plan.scansPerDay,
-        deepScanLimit: plan.deepScanLimit || 5,
+        deepScanLimit: plan.deepScanLimit,
         unlimitedScans: plan.unlimitedScans,
       },
     };
   }
 
   // ============================================================
-  // ✅ 4. فحص SSL/TLS
+  // ✅ 5. فحص SSL/TLS
   // ============================================================
-
   private async inspectSsl(targetUrl: string): Promise<any> {
     return new Promise((resolve) => {
       try {
@@ -298,11 +483,9 @@ export class ScansService {
   }
 
   // ============================================================
-  // ✅ 5. الفحص الرئيسي (معدل)
+  // ✅ 6. الفحص الرئيسي
   // ============================================================
-
   async scanUrl(url: string, userId?: string, isDeepScan: boolean = false) {
-    // ✅ التحقق من صحة الـ URL أولاً
     const urlValidation = this.validateUrl(url);
 
     if (!urlValidation.valid) {
@@ -314,7 +497,6 @@ export class ScansService {
 
     const formattedUrl = urlValidation.formattedUrl;
 
-    // ✅ التحقق من الصلاحية
     const capability = await this.checkUserCapability(userId, isDeepScan);
     if (!capability.allowed) {
       throw new ForbiddenException('Scan not allowed');
@@ -327,7 +509,6 @@ export class ScansService {
     this.logger.log(`📊 Remaining scans: ${capability.remainingScans || 0}`);
 
     try {
-      // ✅ تنفيذ الفحص
       const response = await axios.get(formattedUrl, {
         timeout: 15000,
         maxRedirects: 5,
@@ -344,7 +525,6 @@ export class ScansService {
 
       const responseHeaders = response.headers as Record<string, string>;
 
-      // ✅ تحليل الهيدرز الأمنية
       const securityHeaders = [
         { name: 'content-security-policy', severity: 'HIGH', label: 'CSP' },
         { name: 'strict-transport-security', severity: 'HIGH', label: 'HSTS' },
@@ -362,14 +542,10 @@ export class ScansService {
         const found = Object.keys(responseHeaders).some(
           (key) => key.toLowerCase() === header.name,
         );
-        if (found) {
-          presentHeaders.push(header.name);
-        } else {
-          missingHeaders.push(header.name);
-        }
+        if (found) presentHeaders.push(header.name);
+        else missingHeaders.push(header.name);
       }
 
-      // ✅ حساب النتيجة
       const headerWeights: Record<string, number> = {
         'content-security-policy': 25,
         'strict-transport-security': 20,
@@ -386,16 +562,12 @@ export class ScansService {
       for (const header of securityHeaders) {
         const weight = headerWeights[header.name] || 10;
         totalWeight += weight;
-        const found = presentHeaders.includes(header.name);
-        if (found) {
-          earnedWeight += weight;
-        }
+        if (presentHeaders.includes(header.name)) earnedWeight += weight;
       }
 
       let score =
         totalWeight > 0 ? Math.round((earnedWeight / totalWeight) * 100) : 0;
 
-      // ✅ الفحص العميق
       let sslAnalysis: any = null;
       let corsAnalysis: any = null;
 
@@ -426,7 +598,6 @@ export class ScansService {
 
       this.logger.log(`📊 Final Score: ${score}`);
 
-      // ✅ إنشاء الثغرات
       const detectedVulnerabilities: any[] = [];
 
       for (const header of securityHeaders) {
@@ -457,77 +628,102 @@ export class ScansService {
         });
       }
 
-      // ✅ حفظ في قاعدة البيانات
+      // ✅ حفظ في قاعدة البيانات مع فرض حد التخزين
       let createdScanId: string | undefined = undefined;
       let comparison: any = null;
+      let storageSkipped = false;
+      let storageInfo: any = null;
 
       if (userId) {
         try {
-          const targetDomain = new URL(formattedUrl).hostname;
+          // ✅ التحقق من حد التخزين
+          const storageCheck = await this.checkStorageLimit(userId);
+          storageInfo = storageCheck;
 
-          let website = await this.prisma.website.findFirst({
-            where: { userId, url: formattedUrl },
-          });
+          if (storageCheck.isAtLimit) {
+            this.logger.warn(
+              `⚠️ User ${userId} at storage limit (${storageCheck.storedCount}/${storageCheck.maxStored}). Deleting oldest...`,
+            );
 
-          if (!website) {
-            website = await this.prisma.website.create({
+            const deleted = await this.deleteOldestScan(userId);
+
+            if (!deleted) {
+              storageSkipped = true;
+              this.logger.warn(
+                `⚠️ Could not delete oldest scan for user ${userId}. Skipping storage.`,
+              );
+            }
+          }
+
+          // ✅ إذا فشل الحذف، لا تخزّن الفحص الجديد
+          if (storageSkipped) {
+            this.logger.log(
+              `⏭️ Skipping storage for user ${userId} (storage limit enforced)`,
+            );
+          } else {
+            const targetDomain = new URL(formattedUrl).hostname;
+
+            let website = await this.prisma.website.findFirst({
+              where: { userId, url: formattedUrl },
+            });
+
+            if (!website) {
+              website = await this.prisma.website.create({
+                data: {
+                  url: formattedUrl,
+                  domain: targetDomain,
+                  userId,
+                },
+              });
+            }
+
+            const previousScan = await this.prisma.scan.findFirst({
+              where: { websiteId: website.id },
+              orderBy: { createdAt: 'desc' },
+              include: { vulnerabilities: true },
+            });
+
+            if (previousScan) {
+              const scoreDiff = score - previousScan.score;
+              comparison = {
+                previousScanDate: previousScan.createdAt,
+                previousScore: previousScan.score,
+                scoreDiff,
+                status:
+                  scoreDiff > 10
+                    ? 'IMPROVED'
+                    : scoreDiff < -10
+                      ? 'REGRESSED'
+                      : 'UNCHANGED',
+              };
+            }
+
+            const newScan = await this.prisma.scan.create({
               data: {
-                url: formattedUrl,
-                domain: targetDomain,
+                websiteId: website.id,
+                score,
+                status: ScanStatus.COMPLETED,
+                completedAt: new Date(),
+                vulnerabilities: {
+                  create: detectedVulnerabilities,
+                },
+              },
+            });
+            createdScanId = newScan.id;
+
+            await this.prisma.usageLog.create({
+              data: {
                 userId,
+                action: isDeepScan ? 'DEEP_SCAN' : 'SCAN',
+                metadata: {
+                  url: formattedUrl,
+                  score,
+                  deepScan: isDeepScan,
+                  plan: capability.plan,
+                },
               },
             });
           }
-
-          // ✅ المقارنة مع الفحص السابق
-          const previousScan = await this.prisma.scan.findFirst({
-            where: { websiteId: website.id },
-            orderBy: { createdAt: 'desc' },
-            include: { vulnerabilities: true },
-          });
-
-          if (previousScan) {
-            const scoreDiff = score - previousScan.score;
-            comparison = {
-              previousScanDate: previousScan.createdAt,
-              previousScore: previousScan.score,
-              scoreDiff,
-              status:
-                scoreDiff > 10
-                  ? 'IMPROVED'
-                  : scoreDiff < -10
-                    ? 'REGRESSED'
-                    : 'UNCHANGED',
-            };
-          }
-
-          // ✅ إنشاء الفحص
-          const newScan = await this.prisma.scan.create({
-            data: {
-              websiteId: website.id,
-              score,
-              status: ScanStatus.COMPLETED,
-              completedAt: new Date(),
-              vulnerabilities: {
-                create: detectedVulnerabilities,
-              },
-            },
-          });
-          createdScanId = newScan.id;
-
-          // ✅ تسجيل الاستخدام (هذا سيبقى في قاعدة البيانات حتى يتم حذفه يومياً)
-          await this.prisma.usageLog.create({
-            data: {
-              userId,
-              action: isDeepScan ? 'DEEP_SCAN' : 'SCAN',
-              metadata: {
-                url: formattedUrl,
-                score,
-                deepScan: isDeepScan,
-                plan: capability.plan,
-              },
-            },
-          });
         } catch (dbError: any) {
           this.logger.warn(
             `⚠️ Database error, continuing without saving: ${dbError.message}`,
@@ -535,7 +731,7 @@ export class ScansService {
         }
       }
 
-      // ✅ النتيجة النهائية مع معلومات الاستخدام اليومي
+      // ✅ النتيجة النهائية
       const result = {
         id: createdScanId,
         url: formattedUrl,
@@ -554,16 +750,34 @@ export class ScansService {
         comparison,
         plan: capability.plan,
         isGuest: capability.isGuest,
-        // ✅ إضافة معلومات الاستخدام اليومي
+        // ✅ معلومات الاستخدام والنافذة
         dailyUsage: {
           scansToday: capability.todayScans || 0,
           remainingScans: capability.remainingScans,
           deepScansToday: capability.todayDeepScans || 0,
           remainingDeepScans: capability.remainingDeepScans,
-          deepScanLimit: capability.limits?.deepScanLimit || 5,
-          scansPerDay: capability.limits?.scansPerDay || 10,
+          deepScanLimit:
+            capability.limits?.deepScanLimit === Infinity
+              ? null
+              : capability.limits?.deepScanLimit,
+          scansPerDay: capability.limits?.scansPerDay,
           unlimitedScans: capability.limits?.unlimitedScans || false,
+          windowEnd: capability.windowEnd
+            ? capability.windowEnd.toISOString()
+            : null,
         },
+        // ✅ معلومات التخزين
+        storageInfo: storageInfo
+          ? {
+              storedCount: storageInfo.storedCount,
+              maxStored:
+                storageInfo.maxStored === Infinity
+                  ? null
+                  : storageInfo.maxStored,
+              isAtLimit: storageInfo.isAtLimit,
+              storageSkipped,
+            }
+          : null,
       };
 
       this.logger.log(`✅ Scan completed successfully for: ${formattedUrl}`);
@@ -580,7 +794,7 @@ export class ScansService {
   }
 
   // ============================================================
-  // ✅ باقي الدوال (لم تتغير)
+  // ✅ باقي الدوال
   // ============================================================
 
   private getRemediationSuggestion(headerName: string): string {
@@ -643,16 +857,10 @@ Format your output in Markdown with:
 
     const websiteIds = websites.map((w) => w.id);
 
-    if (websiteIds.length === 0) {
-      return [];
-    }
+    if (websiteIds.length === 0) return [];
 
     return this.prisma.scan.findMany({
-      where: {
-        websiteId: {
-          in: websiteIds,
-        },
-      },
+      where: { websiteId: { in: websiteIds } },
       include: {
         website: true,
         vulnerabilities: true,
@@ -672,9 +880,7 @@ Format your output in Markdown with:
     const scan = await this.prisma.scan.findFirst({
       where: {
         id: scanId,
-        websiteId: {
-          in: websiteIds,
-        },
+        websiteId: { in: websiteIds },
       },
     });
 
@@ -700,9 +906,7 @@ Format your output in Markdown with:
 
       whereClause = {
         id: scanId,
-        websiteId: {
-          in: websiteIds,
-        },
+        websiteId: { in: websiteIds },
       };
     }
 
@@ -813,6 +1017,7 @@ Format your output in Markdown with:
         .text(`${scan.score}%`, 460, doc.y - 3);
 
       doc.moveDown(1.5);
+
       doc
         .moveTo(50, doc.y)
         .lineTo(550, doc.y)
@@ -876,6 +1081,7 @@ Format your output in Markdown with:
       }
 
       doc.moveDown(0.5);
+
       doc
         .moveTo(50, doc.y)
         .lineTo(550, doc.y)
@@ -992,28 +1198,16 @@ Format your output in Markdown with:
 
     const websiteIds = websites.map((w) => w.id);
 
-    if (websiteIds.length === 0) {
-      return [];
-    }
+    if (websiteIds.length === 0) return [];
 
     return this.prisma.scan.findMany({
-      where: {
-        websiteId: {
-          in: websiteIds,
-        },
-      },
+      where: { websiteId: { in: websiteIds } },
       include: {
         website: {
-          select: {
-            domain: true,
-            url: true,
-          },
+          select: { domain: true, url: true },
         },
         vulnerabilities: {
-          select: {
-            severity: true,
-            title: true,
-          },
+          select: { severity: true, title: true },
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -1044,9 +1238,7 @@ Format your output in Markdown with:
         scans: {
           orderBy: { createdAt: 'desc' },
           take: 1,
-          include: {
-            vulnerabilities: true,
-          },
+          include: { vulnerabilities: true },
         },
       },
     });
@@ -1061,9 +1253,7 @@ Format your output in Markdown with:
       throw new NotFoundException('Website not found');
     }
 
-    return this.prisma.website.delete({
-      where: { id: websiteId },
-    });
+    return this.prisma.website.delete({ where: { id: websiteId } });
   }
 
   async getUserActivities(userId: string) {
@@ -1082,31 +1272,24 @@ Format your output in Markdown with:
     plan: string,
     role: string,
   ): number | typeof Infinity {
-    if (role === 'admin') {
-      return Infinity;
-    }
+    if (role === 'admin') return Infinity;
 
-    const retentionMap: Record<string, number> = {
-      free: 7,
-      pro: 30,
-      extra: 90,
-      premium: 365,
-    };
+    const planId = (plan as PlanId) || 'free';
+    const planConfig = PLANS[planId];
 
-    return retentionMap[plan] || 7;
+    return planConfig?.historyRetentionDays ?? 7;
   }
 
+  /**
+   * ✅ Cron: حذف الفحوصات التي تجاوزت مدة الحفظ (يومياً عند منتصف الليل)
+   */
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
   async cleanExpiredScans() {
-    this.logger.log('🧹 Starting expired scans cleanup...');
+    this.logger.log('🧹 [Cron] Starting expired scans cleanup...');
 
     try {
       const users = await this.prisma.user.findMany({
-        select: {
-          id: true,
-          plan: true,
-          role: true,
-        },
+        select: { id: true, plan: true, role: true },
       });
 
       let totalDeleted = 0;
@@ -1132,18 +1315,12 @@ Format your output in Markdown with:
 
         const websiteIds = websites.map((w) => w.id);
 
-        if (websiteIds.length === 0) {
-          continue;
-        }
+        if (websiteIds.length === 0) continue;
 
         const deleted = await this.prisma.scan.deleteMany({
           where: {
-            websiteId: {
-              in: websiteIds,
-            },
-            createdAt: {
-              lt: cutoffDate,
-            },
+            websiteId: { in: websiteIds },
+            createdAt: { lt: cutoffDate },
           },
         });
 
@@ -1155,71 +1332,32 @@ Format your output in Markdown with:
             deleted: deleted.count,
           });
           this.logger.log(
-            `🗑️ Deleted ${deleted.count} expired scans for user ${user.id} (${user.plan} plan)`,
+            `🗑️ Deleted ${deleted.count} expired scans for user ${user.id} (${user.plan} plan, retention: ${retentionDays}d)`,
           );
         }
       }
 
       if (totalDeleted > 0) {
         this.logger.log(
-          `✅ Cleanup complete: ${totalDeleted} total scans deleted`,
+          `✅ [Cron] Cleanup complete: ${totalDeleted} total scans deleted`,
         );
       } else {
-        this.logger.log('✅ No expired scans found to delete');
+        this.logger.log('✅ [Cron] No expired scans found to delete');
       }
 
       return { totalDeleted, results };
     } catch (error) {
-      this.logger.error('❌ Failed to clean expired scans:', error);
+      this.logger.error('❌ [Cron] Failed to clean expired scans:', error);
       throw error;
     }
   }
 
   async cleanUserExpiredScans(userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { plan: true, role: true },
-    });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    const retentionDays = this.getRetentionDays(user.plan, user.role);
-
-    if (retentionDays === Infinity) {
-      return { message: 'Permanent retention - no scans deleted', deleted: 0 };
-    }
-
-    const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
-
-    const websites = await this.prisma.website.findMany({
-      where: { userId },
-      select: { id: true },
-    });
-
-    const websiteIds = websites.map((w) => w.id);
-
-    if (websiteIds.length === 0) {
-      return { deleted: 0, retentionDays, message: 'No websites found' };
-    }
-
-    const deleted = await this.prisma.scan.deleteMany({
-      where: {
-        websiteId: {
-          in: websiteIds,
-        },
-        createdAt: {
-          lt: cutoffDate,
-        },
-      },
-    });
-
-    this.logger.log(
-      `🗑️ Deleted ${deleted.count} expired scans for user ${userId}`,
-    );
-    return { deleted: deleted.count, retentionDays };
+    const result = await this.enforceRetentionForUser(userId);
+    return {
+      deleted: result.deleted,
+      retentionDays: result.retentionDays,
+    };
   }
 
   async getUserStorageStats(userId: string) {
@@ -1233,6 +1371,10 @@ Format your output in Markdown with:
     }
 
     const retentionDays = this.getRetentionDays(user.plan, user.role);
+    const planId = (user.plan as PlanId) || 'free';
+    const planConfig = PLANS[planId];
+    const maxStoredScans =
+      (planConfig as any)?.maxStoredScans ?? Infinity;
 
     const websites = await this.prisma.website.findMany({
       where: { userId },
@@ -1247,45 +1389,39 @@ Format your output in Markdown with:
         expiredScans: 0,
         retentionDays,
         isPermanent: retentionDays === Infinity,
+        maxStoredScans,
+        atStorageLimit: false,
       };
     }
 
     const totalScans = await this.prisma.scan.count({
-      where: {
-        websiteId: {
-          in: websiteIds,
-        },
-      },
+      where: { websiteId: { in: websiteIds } },
     });
+
+    let expiredScans = 0;
 
     if (retentionDays !== Infinity) {
       const cutoffDate = new Date();
       cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
 
-      const expiredScans = await this.prisma.scan.count({
+      expiredScans = await this.prisma.scan.count({
         where: {
-          websiteId: {
-            in: websiteIds,
-          },
-          createdAt: {
-            lt: cutoffDate,
-          },
+          websiteId: { in: websiteIds },
+          createdAt: { lt: cutoffDate },
         },
       });
-
-      return {
-        totalScans,
-        expiredScans,
-        retentionDays,
-        isPermanent: false,
-      };
     }
+
+    const atStorageLimit =
+      maxStoredScans !== Infinity && totalScans >= maxStoredScans;
 
     return {
       totalScans,
-      expiredScans: 0,
-      retentionDays: Infinity,
-      isPermanent: true,
+      expiredScans,
+      retentionDays,
+      isPermanent: retentionDays === Infinity,
+      maxStoredScans,
+      atStorageLimit,
     };
   }
 
@@ -1297,16 +1433,10 @@ Format your output in Markdown with:
 
     const websiteIds = websites.map((w) => w.id);
 
-    if (websiteIds.length === 0) {
-      return null;
-    }
+    if (websiteIds.length === 0) return null;
 
     return this.prisma.scan.findFirst({
-      where: {
-        websiteId: {
-          in: websiteIds,
-        },
-      },
+      where: { websiteId: { in: websiteIds } },
       orderBy: { createdAt: 'desc' },
       include: {
         website: true,
@@ -1316,8 +1446,7 @@ Format your output in Markdown with:
   }
 
   async getDailyStats(userId: string) {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const window = await this.getUsageWindow(userId);
 
     const websites = await this.prisma.website.findMany({
       where: { userId },
@@ -1326,34 +1455,14 @@ Format your output in Markdown with:
 
     const websiteIds = websites.map((w) => w.id);
 
-    const scansToday = await this.prisma.usageLog.count({
-      where: {
-        userId,
-        action: {
-          in: ['SCAN', 'DEEP_SCAN'],
-        },
-        createdAt: { gte: today },
-      },
-    });
-
-    const deepScansToday = await this.prisma.usageLog.count({
-      where: {
-        userId,
-        action: 'DEEP_SCAN',
-        createdAt: { gte: today },
-      },
-    });
-
     return {
-      scansToday,
-      deepScansToday,
+      scansToday: window.scansToday,
+      deepScansToday: window.deepScansToday,
       totalScans: await this.prisma.scan.count({
-        where: {
-          websiteId: {
-            in: websiteIds,
-          },
-        },
+        where: { websiteId: { in: websiteIds } },
       }),
+      windowStart: window.windowStart,
+      windowEnd: window.windowEnd,
     };
   }
 }

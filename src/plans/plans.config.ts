@@ -7,13 +7,14 @@ export const PLANS = {
     price: 0,
     priceYearly: 0,
     description: 'Perfect for getting started with basic security scanning',
-    scansPerDay: 10,                    // ✅ 10 فحوصات يومياً
-    deepScanLimit: 5,                   // ✅ 5 Deep Scans يومياً
+    scansPerDay: 10, // ✅ 10 فحوصات يومياً
+    deepScanLimit: 5, // ✅ 5 Deep Scans يومياً
     concurrentScans: 1,
-    historyRetentionDays: 7,
+    historyRetentionDays: 7, // ✅ 7 أيام
+    maxStoredScans: 50, // ✅ 50 فحص مخزن كحد أقصى
     aiFixesEnabled: false,
     exportReportsEnabled: true,
-    deepScanEnabled: true,              // ✅ تفعيل Deep Scan للـ Free
+    deepScanEnabled: true, // ✅ تفعيل Deep Scan للـ Free
     prioritySupport: false,
     customRulesEnabled: false,
     maxTeamMembers: 1,
@@ -36,10 +37,11 @@ export const PLANS = {
     price: 29,
     priceYearly: 290,
     description: 'Ideal for professional developers and small teams',
-    scansPerDay: 50,                    // ✅ 50 فحص يومياً
-    deepScanLimit: Infinity,            // ✅ غير محدود
+    scansPerDay: 50, // ✅ 50 فحص يومياً
+    deepScanLimit: Infinity, // ✅ غير محدود
     concurrentScans: 5,
-    historyRetentionDays: 90,
+    historyRetentionDays: 30, // ✅ 30 يوم (شهر)
+    maxStoredScans: 500, // ✅ 500 فحص مخزن كحد أقصى
     aiFixesEnabled: true,
     exportReportsEnabled: true,
     deepScanEnabled: true,
@@ -65,10 +67,11 @@ export const PLANS = {
     price: 79,
     priceYearly: 790,
     description: 'For enterprises and power users needing maximum capabilities',
-    scansPerDay: Infinity,              // ✅ غير محدود
-    deepScanLimit: Infinity,            // ✅ غير محدود
+    scansPerDay: Infinity, // ✅ غير محدود
+    deepScanLimit: Infinity, // ✅ غير محدود
     concurrentScans: Infinity,
-    historyRetentionDays: 365,
+    historyRetentionDays: 90, // ✅ 90 يوم (3 أشهر)
+    maxStoredScans: 2000, // ✅ 2000 فحص مخزن كحد أقصى
     aiFixesEnabled: true,
     exportReportsEnabled: true,
     deepScanEnabled: true,
@@ -92,3 +95,7 @@ export const PLANS = {
 
 export type PlanId = keyof typeof PLANS;
 export type Plan = (typeof PLANS)[PlanId];
+
+// ✅ أنواع مساعدة
+export type MaxStoredScansType = number | typeof Infinity;
+export type HistoryRetentionType = number | typeof Infinity;

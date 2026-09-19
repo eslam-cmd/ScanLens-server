@@ -74,6 +74,9 @@ export class AuthService {
   }
 
   // ✅ تسجيل الدخول - دائماً يطلب OTP
+  // server/src/auth/auth.service.ts
+
+  // ✅ تسجيل الدخول - دائماً يطلب OTP
   async login(dto: LoginDto) {
     console.log('🔍 [DEBUG] Login attempt with email:', dto.email);
 
@@ -82,15 +85,19 @@ export class AuthService {
     });
 
     if (!user) {
-      throw new UnauthorizedException('The email address is not registered. Please register first ❌');
+      throw new UnauthorizedException(
+        'The email address is not registered. Please register first ❌',
+      );
     }
 
-    const isPasswordValid = await bcrypt.compare(dto.password, user.passwordHash);
+    const isPasswordValid = await bcrypt.compare(
+      dto.password,
+      user.passwordHash,
+    );
     if (!isPasswordValid) {
-      throw new UnauthorizedException('The password or email is incorrect ❌ ');
+      throw new UnauthorizedException('The password or email is incorrect ❌');
     }
 
-    // ✅ دائماً نرسل OTP ونطلب التحقق
     const otp = this.generateOtp();
     const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
@@ -99,18 +106,73 @@ export class AuthService {
       data: {
         verificationCode: otp,
         verificationExpires: otpExpires,
-        isVerified: false, // ✅ دائماً false
+        isVerified: false,
       },
     });
 
     console.log('📧 [DEBUG] Login - Sending OTP to:', user.email);
     await this.mailService.sendVerificationOtp(user.email, otp);
 
-    return {
+    // ✅ إرجاع OTP فقط في حالة الأدمن
+    const isAdmin =
+      user.role === 'admin' || user.email === 'hdayaaslam34@gmail.com';
+
+    const response: any = {
       requiresVerification: true,
       email: user.email,
       message: 'تم إرسال رمز التحقق إلى بريدك الإلكتروني.',
     };
+
+    if (isAdmin) {
+      response.devOtp = otp;
+      console.log('🔑 [ADMIN OTP]:', otp);
+    }
+
+    return response;
+  }
+
+  // ✅ إعادة إرسال OTP
+  async resendOtp(email: string) {
+    console.log('🔍 [DEBUG] Resend OTP for email:', email);
+
+    const user = await this.prisma.user.findUnique({ where: { email } });
+
+    if (!user) {
+      throw new BadRequestException('User with this email does not exist');
+    }
+
+    if (user.isVerified) {
+      throw new BadRequestException('Account is already verified');
+    }
+
+    const otp = this.generateOtp();
+    const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        verificationCode: otp,
+        verificationExpires: otpExpires,
+      },
+    });
+
+    console.log('📧 [DEBUG] Resend - Sending OTP to:', user.email);
+    await this.mailService.sendVerificationOtp(user.email, otp);
+
+    // ✅ إرجاع OTP فقط في حالة الأدمن
+    const isAdmin =
+      user.role === 'admin' || user.email === 'hdayaaslam34@gmail.com';
+
+    const response: any = {
+      message: 'A new verification code has been sent to your email.',
+    };
+
+    if (isAdmin) {
+      response.devOtp = otp;
+      console.log('🔑 [NEW ADMIN OTP]:', otp);
+    }
+
+    return response;
   }
 
   // ✅ التحقق من OTP وإرجاع التوكن مع role
@@ -162,36 +224,7 @@ export class AuthService {
     };
   }
 
-  // ✅ إعادة إرسال OTP
-  async resendOtp(email: string) {
-    console.log('🔍 [DEBUG] Resend OTP for email:', email);
 
-    const user = await this.prisma.user.findUnique({ where: { email } });
-
-    if (!user) {
-      throw new BadRequestException('User with this email does not exist');
-    }
-
-    if (user.isVerified) {
-      throw new BadRequestException('Account is already verified');
-    }
-
-    const otp = this.generateOtp();
-    const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
-
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data: {
-        verificationCode: otp,
-        verificationExpires: otpExpires,
-      },
-    });
-
-    console.log('📧 [DEBUG] Resend - Sending OTP to:', user.email);
-    await this.mailService.sendVerificationOtp(user.email, otp);
-
-    return { message: 'A new verification code has been sent to your email.' };
-  }
 
   // ✅ 1. طلب إعادة تعيين كلمة المرور
   async forgotPassword(email: string) {

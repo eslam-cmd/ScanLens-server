@@ -19,6 +19,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ExportService } from './export.service';
+import { PLANS, PlanId } from '../plans/plans.config';
 
 @Controller('scans')
 export class ScansController {
@@ -29,9 +30,9 @@ export class ScansController {
     private prisma: PrismaService,
   ) {}
 
-  // ✅ 1. فحص مباشر (بدون Queue)
+  // ✅ 1. فحص مباشر
   @Post('direct-scan')
-  @UseGuards(JwtAuthGuard) // ✅ يتطلب تسجيل دخول
+  @UseGuards(JwtAuthGuard)
   async directScan(
     @Body() body: { url: string; deepScan?: boolean },
     @Req() req: any,
@@ -42,7 +43,6 @@ export class ScansController {
       throw new ForbiddenException('User not authenticated');
     }
 
-    // ✅ تنفيذ الفحص مباشرة
     const result = await this.scansService.scanUrl(
       body.url,
       userId,
@@ -53,18 +53,19 @@ export class ScansController {
       id: result?.id,
       score: result?.score,
       vulnerabilities: result?.vulnerabilities?.length || 0,
+      windowEnd: result?.dailyUsage?.windowEnd,
+      storageInfo: result?.storageInfo,
     });
 
     return result;
   }
 
-  // ✅ 2. فحص للضيوف (بدون JWT)
+  // ✅ 2. فحص للضيوف
   @Post('guest-scan')
   async guestScan(@Body() body: { url: string; deepScan?: boolean }) {
-    // ✅ فحص بدون userId (ضيف)
     const result = await this.scansService.scanUrl(
       body.url,
-      undefined, // no userId
+      undefined,
       body.deepScan || false,
     );
 
@@ -165,7 +166,7 @@ export class ScansController {
     return res.status(200).send(csvContent);
   }
 
-  // ✅ 9. الحصول على خطة المستخدم الحالية
+  // ✅ 9. خطة المستخدم الحالية
   @Get('my-plan')
   @UseGuards(JwtAuthGuard)
   async getMyPlan(@Req() req: any) {
@@ -179,7 +180,7 @@ export class ScansController {
     };
   }
 
-  // ✅ 10. تنظيف الفحوصات المنتهية (للمدير فقط)
+  // ✅ 10. تنظيف شامل (للمدير فقط)
   @Delete('clean-expired')
   @UseGuards(JwtAuthGuard)
   async cleanExpiredScans(@Req() req: any) {
@@ -190,7 +191,7 @@ export class ScansController {
     return result;
   }
 
-  // ✅ 11. تنظيف فحوصات المستخدم المنتهية
+  // ✅ 11. تنظيف فحوصات المستخدم
   @Delete('user/clean-expired')
   @UseGuards(JwtAuthGuard)
   async cleanUserExpiredScans(@Req() req: any) {
@@ -198,7 +199,7 @@ export class ScansController {
     return result;
   }
 
-  // ✅ 12. الحصول على إحصائيات التخزين
+  // ✅ 12. إحصائيات التخزين
   @Get('storage-stats')
   @UseGuards(JwtAuthGuard)
   async getStorageStats(@Req() req: any) {
@@ -206,7 +207,7 @@ export class ScansController {
     return stats;
   }
 
-  // ✅ 13. الحصول على إحصائيات اليومية
+  // ✅ 13. إحصائيات اليومية
   @Get('daily-stats')
   @UseGuards(JwtAuthGuard)
   async getDailyStats(@Req() req: any) {
@@ -214,11 +215,61 @@ export class ScansController {
     return stats;
   }
 
-  // ✅ 14. الحصول على آخر فحص
+  // ✅ 14. آخر فحص
   @Get('latest')
   @UseGuards(JwtAuthGuard)
   async getLatestScan(@Req() req: any) {
     const scan = await this.scansService.getLatestScan(req.user.id);
     return scan;
+  }
+
+  // ✅ 15. نافذة الاستخدام الحالية (24 ساعة)
+  @Get('usage-window')
+  @UseGuards(JwtAuthGuard)
+  async getUsageWindow(@Req() req: any) {
+    const window = await this.scansService.getUsageWindow(req.user.id);
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { plan: true, role: true },
+    });
+
+    const plan = user?.plan || 'free';
+    const planConfig = PLANS[plan as PlanId] || PLANS.free;
+
+    const remainingScans = planConfig.unlimitedScans
+      ? null
+      : Math.max(0, planConfig.scansPerDay - window.scansToday);
+
+    const remainingDeepScans = planConfig.unlimitedScans
+      ? null
+      : planConfig.deepScanLimit === Infinity
+        ? null
+        : Math.max(0, planConfig.deepScanLimit - window.deepScansToday);
+
+    return {
+      windowStart: window.windowStart.toISOString(),
+      windowEnd: window.windowEnd.toISOString(),
+      scansToday: window.scansToday,
+      deepScansToday: window.deepScansToday,
+      remainingScans,
+      remainingDeepScans,
+      plan,
+      limits: {
+        scansPerDay: planConfig.scansPerDay,
+        deepScanLimit:
+          planConfig.deepScanLimit === Infinity
+            ? null
+            : planConfig.deepScanLimit,
+        unlimitedScans: planConfig.unlimitedScans,
+      },
+    };
+  }
+
+  // ✅ 16. حالة حد التخزين
+  @Get('storage-check')
+  @UseGuards(JwtAuthGuard)
+  async getStorageCheck(@Req() req: any) {
+    return this.scansService.checkStorageLimit(req.user.id);
   }
 }

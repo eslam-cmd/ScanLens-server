@@ -43,6 +43,8 @@ export class AuthController {
     return await this.authService.register(dto);
   }
 
+  // server/src/auth/auth.controller.ts
+
   @Post('login')
   async login(
     @Body() dto: LoginDto,
@@ -208,13 +210,11 @@ export class AuthController {
   // server/src/auth/auth.controller.ts
 
   @Post('logout')
-  async logout(
-    @Request() req,
-    @Res({ passthrough: true }) res: Response,
-  ) {
+  async logout(@Request() req, @Res({ passthrough: true }) res: Response) {
     try {
       // ✅ الحصول على التوكن من الكوكي أو الـ Header
-      const token = req.cookies?.access_token || req.headers.authorization?.split(' ')[1];
+      const token =
+        req.cookies?.access_token || req.headers.authorization?.split(' ')[1];
 
       if (token) {
         try {
@@ -223,7 +223,10 @@ export class AuthController {
           if (payload && payload.id) {
             // ✅ تغيير isVerified إلى false في قاعدة البيانات
             await this.authService.setUserUnverified(payload.id);
-            console.log('🔓 [DEBUG] User unverified after logout:', payload.email);
+            console.log(
+              '🔓 [DEBUG] User unverified after logout:',
+              payload.email,
+            );
           }
         } catch (error) {
           console.log('⚠️ [DEBUG] Token verification failed:', error.message);
