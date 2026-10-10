@@ -3,7 +3,7 @@
 Backend API for ScanLens, built with NestJS, TypeScript, Prisma, and PostgreSQL. It handles authentication, scan requests, subscription rules, reports, and background scan jobs using BullMQ and Redis.
 
 > Frontend: [ScanLens Client](https://github.com/eslam-cmd/ScanLens-client)  
-> Interview and code walkthrough: [Backend and Networking Guide](../docs/BACKEND_NETWORK_INTERVIEW_GUIDE.md)
+> To understand the project's backend with practical code examples, Raed [Guide to Backend and Networking](docs/BACKEND_NETWORK_INTERVIEW_GUIDE.md).
 
 ## What the backend does
 
