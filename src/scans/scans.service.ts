@@ -6,6 +6,7 @@ import {
   ForbiddenException,
   NotFoundException,
   Logger,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -15,12 +16,11 @@ import axios from 'axios';
 import * as tls from 'tls';
 import { URL } from 'url';
 import PDFDocument from 'pdfkit';
+type PDFKitDocument = InstanceType<typeof PDFDocument>;
 import { PLANS, PlanId } from '../plans/plans.config';
 import { HeadersEngine } from '../scanner/engines/headers.engine';
 import { CookiesEngine } from '../scanner/engines/cookies.engine';
 import { HttpsEngine } from '../scanner/engines/https.engine';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
 
 @Injectable()
 export class ScansService {
@@ -32,7 +32,6 @@ export class ScansService {
     private headersEngine: HeadersEngine,
     private cookiesEngine: CookiesEngine,
     private httpsEngine: HttpsEngine,
-    @InjectQueue('scan-queue') private scanQueue: Queue,
   ) {
     this.ai = new GoogleGenAI({
       apiKey: process.env.GEMINI_API_KEY || '',
@@ -485,6 +484,22 @@ export class ScansService {
   // ============================================================
   // ✅ 6. الفحص الرئيسي
   // ============================================================
+  async validateScanRequest(
+    url: string,
+    userId: string,
+    isDeepScan: boolean,
+  ) {
+    const urlValidation = this.validateUrl(url);
+
+    if (!urlValidation.valid) {
+      throw new BadRequestException(
+        `Invalid URL: ${url}. Please enter a valid domain name.`,
+      );
+    }
+
+    await this.checkUserCapability(userId, isDeepScan);
+  }
+
   async scanUrl(url: string, userId?: string, isDeepScan: boolean = false) {
     const urlValidation = this.validateUrl(url);
 
@@ -787,6 +802,11 @@ export class ScansService {
       if (error instanceof ForbiddenException) {
         throw error;
       }
+      if (axios.isAxiosError(error)) {
+        throw new ServiceUnavailableException(
+          `Failed to reach target URL: ${formattedUrl}`,
+        );
+      }
       throw new BadRequestException(
         `Failed to reach target URL: ${formattedUrl} - ${error.message}`,
       );
@@ -850,6 +870,8 @@ Format your output in Markdown with:
   }
 
   async getUserHistory(userId: string) {
+    await this.enforceRetentionForUser(userId);
+
     const websites = await this.prisma.website.findMany({
       where: { userId },
       select: { id: true },
@@ -1361,6 +1383,8 @@ Format your output in Markdown with:
   }
 
   async getUserStorageStats(userId: string) {
+    await this.enforceRetentionForUser(userId);
+
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { plan: true, role: true },
@@ -1426,6 +1450,8 @@ Format your output in Markdown with:
   }
 
   async getLatestScan(userId: string) {
+    await this.enforceRetentionForUser(userId);
+
     const websites = await this.prisma.website.findMany({
       where: { userId },
       select: { id: true },
@@ -1446,6 +1472,8 @@ Format your output in Markdown with:
   }
 
   async getDailyStats(userId: string) {
+    await this.enforceRetentionForUser(userId);
+
     const window = await this.getUsageWindow(userId);
 
     const websites = await this.prisma.website.findMany({

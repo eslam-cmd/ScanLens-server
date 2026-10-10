@@ -8,24 +8,10 @@ import { ScansModule } from '../scans/scans.module';
 
 @Module({
   imports: [
+    // ✅ فقط سجّل الطابور — الاتصال موجود في app.module.ts
     BullModule.registerQueue({
       name: 'scan-queue',
-      // ✅ إعدادات Redis
-      connection: {
-        host: 'localhost',
-        port: 6379,
-       
-      },
-      // ✅ إعدادات افتراضية للـ Jobs
-      defaultJobOptions: {
-        attempts: 3,
-        removeOnComplete: false,
-        removeOnFail: true,
-        backoff: {
-          type: 'exponential',
-          delay: 3000,
-        },
-      },
+      // ✅ لا تحتاج connection هنا — موروث من forRoot()
     }),
     forwardRef(() => ScansModule),
   ],

@@ -3,6 +3,7 @@
 import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import PDFDocument from 'pdfkit';
+type PDFKitDocument = InstanceType<typeof PDFDocument>;
 import { Parser } from 'json2csv';
 
 // ============================================================
@@ -328,7 +329,7 @@ export class ExportService {
   // ✅ 3.2. PDF Drawing Helpers — رسم عناصر PDF
   // ============================================================
 
-  private drawHeader(doc: PDFKit.PDFDocument, reportId: string) {
+  private drawHeader(doc: PDFKitDocument, reportId: string) {
     const { pageWidth, margin } = THEME.layout;
     const { colors, fonts } = THEME;
 
@@ -362,7 +363,7 @@ export class ExportService {
   }
 
   private drawFooter(
-    doc: PDFKit.PDFDocument,
+    doc: PDFKitDocument,
     reportId: string,
     pageNumber: number,
   ) {
@@ -400,7 +401,7 @@ export class ExportService {
       });
   }
 
-  private addNewPage(doc: PDFKit.PDFDocument, reportId: string): number {
+  private addNewPage(doc: PDFKitDocument, reportId: string): number {
     doc.addPage({ size: 'A4', layout: 'portrait' });
     const pageNum = doc.bufferedPageRange().count;
     this.drawHeader(doc, reportId);
@@ -408,7 +409,7 @@ export class ExportService {
   }
 
   private ensureSpace(
-    doc: PDFKit.PDFDocument,
+    doc: PDFKitDocument,
     reportId: string,
     neededHeight: number,
   ) {
@@ -419,7 +420,7 @@ export class ExportService {
   }
 
   private drawSectionTitle(
-    doc: PDFKit.PDFDocument,
+    doc: PDFKitDocument,
     title: string,
     icon: string = '',
   ) {
@@ -446,7 +447,7 @@ export class ExportService {
    * فقرة نصية عادية (تستخدم للشروحات الطويلة في أقسام الـ About/Glossary)
    */
   private drawParagraph(
-    doc: PDFKit.PDFDocument,
+    doc: PDFKitDocument,
     text: string,
     opts: { italic?: boolean } = {},
   ) {
@@ -459,7 +460,7 @@ export class ExportService {
     doc.moveDown(0.5);
   }
 
-  private drawScoreCard(doc: PDFKit.PDFDocument, score: number) {
+  private drawScoreCard(doc: PDFKitDocument, score: number) {
     const { margin, contentWidth, cardRadius } = THEME.layout;
     const { colors, fonts } = THEME;
     const style = this.getScoreStyle(score);
@@ -530,7 +531,7 @@ export class ExportService {
   }
 
   private drawInfoCard(
-    doc: PDFKit.PDFDocument,
+    doc: PDFKitDocument,
     title: string,
     rows: Array<{ label: string; value: string }>,
   ) {
@@ -581,7 +582,7 @@ export class ExportService {
    * - إضافة سطر "Why this matters" مبني على severity المعرّفة بالـ knowledge base
    */
   private drawVulnerabilityCard(
-    doc: PDFKit.PDFDocument,
+    doc: PDFKitDocument,
     index: number,
     vuln: {
       title: string;
@@ -741,7 +742,7 @@ export class ExportService {
    * رسم بطاقة تحليل الـ Headers — نسخة محسّنة بشرح لكل هيدر
    */
   private drawHeadersCard(
-    doc: PDFKit.PDFDocument,
+    doc: PDFKitDocument,
     present: string[],
     missing: string[],
     reportId: string,
@@ -873,7 +874,7 @@ export class ExportService {
   }
 
   private drawSeveritySummary(
-    doc: PDFKit.PDFDocument,
+    doc: PDFKitDocument,
     counts: { critical: number; high: number; medium: number; low: number },
   ) {
     const { margin, contentWidth } = THEME.layout;
@@ -948,7 +949,7 @@ export class ExportService {
    * ✅ قسم جديد: "About This Report" — يشرح للقارئ منهجية الفحص وكيف تُحسب الدرجة،
    * قبل الدخول في التفاصيل. هذا هو الفرق الأساسي بين تقرير "مفهوم" وتقرير "أرقام فقط".
    */
-  private drawAboutSection(doc: PDFKit.PDFDocument, reportId: string) {
+  private drawAboutSection(doc: PDFKitDocument, reportId: string) {
     const { colors, fonts } = THEME;
 
     this.ensureSpace(doc, reportId, 140);
@@ -979,7 +980,7 @@ export class ExportService {
   /**
    * ✅ قسم جديد: "Glossary" — تعريف كل severity level وكل header بشكل مرجعي في نهاية التقرير
    */
-  private drawGlossaryPage(doc: PDFKit.PDFDocument, reportId: string) {
+  private drawGlossaryPage(doc: PDFKitDocument, reportId: string) {
     const { colors, fonts } = THEME;
 
     this.addNewPage(doc, reportId);
@@ -1058,7 +1059,7 @@ export class ExportService {
   }
 
   private drawCoverPage(
-    doc: PDFKit.PDFDocument,
+    doc: PDFKitDocument,
     scan: ScanWithRelations,
     reportId: string,
   ) {

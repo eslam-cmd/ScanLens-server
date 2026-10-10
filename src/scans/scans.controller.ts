@@ -8,6 +8,8 @@ import {
   Res,
   UseGuards,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Delete,
   NotFoundException,
@@ -20,6 +22,7 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ExportService } from './export.service';
 import { PLANS, PlanId } from '../plans/plans.config';
+import { QueueService } from '../queue/queue.service';
 
 @Controller('scans')
 export class ScansController {
@@ -27,12 +30,14 @@ export class ScansController {
     private readonly scansService: ScansService,
     private readonly jwtService: JwtService,
     private readonly exportService: ExportService,
+    private readonly queueService: QueueService,
     private prisma: PrismaService,
   ) {}
 
   // ✅ 1. فحص مباشر
   @Post('direct-scan')
   @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.ACCEPTED)
   async directScan(
     @Body() body: { url: string; deepScan?: boolean },
     @Req() req: any,
@@ -43,21 +48,29 @@ export class ScansController {
       throw new ForbiddenException('User not authenticated');
     }
 
-    const result = await this.scansService.scanUrl(
+    await this.scansService.validateScanRequest(
       body.url,
       userId,
       body.deepScan || false,
     );
 
-    console.log('📤 Direct scan result:', {
-      id: result?.id,
-      score: result?.score,
-      vulnerabilities: result?.vulnerabilities?.length || 0,
-      windowEnd: result?.dailyUsage?.windowEnd,
-      storageInfo: result?.storageInfo,
+    const { jobId, queueInfo } = await this.queueService.addScanJob({
+      url: body.url,
+      userId,
+      isDeepScan: body.deepScan || false,
     });
 
-    return result;
+    return {
+      jobId,
+      status: 'waiting',
+      queueInfo,
+    };
+  }
+
+  @Get('jobs/:jobId')
+  @UseGuards(JwtAuthGuard)
+  async getScanJobStatus(@Param('jobId') jobId: string, @Req() req: any) {
+    return this.queueService.getJobStatus(jobId, req.user.id);
   }
 
   // ✅ 2. فحص للضيوف

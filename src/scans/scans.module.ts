@@ -1,6 +1,5 @@
 // server/src/scans/scans.module.ts
 import { forwardRef, Module } from '@nestjs/common';
-import { BullModule } from '@nestjs/bullmq'; // ✅ أضف هذا
 import { ScansService } from './scans.service';
 import { ScansController } from './scans.controller';
 import { PrismaModule } from '../../prisma/prisma.module';
@@ -18,10 +17,6 @@ import { HttpsEngine } from '../scanner/engines/https.engine';
     AuthModule,
     forwardRef(() => QueueModule),
     SubscriptionModule,
-    BullModule.registerQueue({
-      // ✅ أضف هذا
-      name: 'scan-queue',
-    }),
   ],
   controllers: [ScansController],
   providers: [

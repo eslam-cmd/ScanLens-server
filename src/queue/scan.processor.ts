@@ -1,16 +1,19 @@
 // server/src/queue/scan.processor.ts
 
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Job } from 'bullmq';
+import { Job, UnrecoverableError } from 'bullmq';
 import {
   Logger,
   Inject,
   forwardRef,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { ScansService } from '../scans/scans.service';
 
-@Processor('scan-queue')
+@Processor('scan-queue', {
+  concurrency: 3, // ✅ 3 مهام متزامنة (عدّلها حسب مواردك)
+})
 export class ScanProcessor extends WorkerHost {
   private readonly logger = new Logger(ScanProcessor.name);
 
@@ -36,39 +39,33 @@ export class ScanProcessor extends WorkerHost {
     );
 
     try {
+      // ✅ تحديث progress
+      await job.updateProgress(10);
+
       const result = await this.scansService.scanUrl(url, userId, isDeepScan);
 
-      // ✅ تأكد من أن النتيجة تحتوي على البيانات المطلوبة
-      const scanResult = {
-        id: result?.id || null,
-        score: result?.score ?? 0,
-        vulnerabilities: result?.vulnerabilities || [],
-        // ✅ إزالة status لأنها غير موجودة في الـ result
-        headers: result?.headers || { presentHeaders: [], missingHeaders: [] },
-        ssl: result?.ssl || null,
-        cors: result?.cors || null,
-        cookies: result?.cookies || [],
-        comparison: result?.comparison || null,
-        plan: result?.plan || 'free',
-        isDeepScan: result?.isDeepScan || false,
-        url: result?.url || url,
-      };
+      await job.updateProgress(90);
+
+      await job.updateProgress(100);
 
       this.logger.log(`✅ Scan completed for: ${url}`);
       this.logger.log(`📊 Result:`, {
-        id: scanResult.id,
-        score: scanResult.score,
-        vulnerabilities: scanResult.vulnerabilities.length,
+        id: result?.id,
+        score: result?.score,
+        vulnerabilities: result?.vulnerabilities?.length || 0,
       });
 
-      return scanResult;
+      return result;
     } catch (error) {
       this.logger.error(`❌ Scan failed for: ${url}`);
       this.logger.error(`❌ Error: ${error.message}`);
 
-      if (error instanceof BadRequestException) {
+      if (
+        error instanceof BadRequestException ||
+        error instanceof ForbiddenException
+      ) {
         this.logger.warn(`🚫 Invalid URL or Bad Request, not retrying: ${url}`);
-        throw error;
+        throw new UnrecoverableError(error.message);
       }
 
       if (
